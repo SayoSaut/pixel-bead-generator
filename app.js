@@ -1860,11 +1860,25 @@ bindIfPresent("sync-save", "click", async () => {
       "ok"
     );
   } catch (err) {
-    setSyncStatus(
-      "连不上：" + err.message +
-      "（检查地址是否完整、口令是否正确，以及服务器的 ALLOWED_ORIGIN 是否填了这个网站的地址）",
-      "error"
-    );
+    // 按失败的类型给出不同的排查方向 —— 一句笼统的"检查地址和口令"会让人
+    // 反复核对其实没错的东西。三种失败的根因完全不同：
+    //   401  服务端收到了请求但不认这个口令 → 名单或代码版本的问题
+    //   网络 请求根本没到 → 地址写错，或 CORS（浏览器此时拿不到状态码）
+    //   500  服务端自己没配好 → 通常是 KV 没绑
+    const msg = err.message || "";
+    let hint;
+    if (msg === "口令不对") {
+      hint = "服务器上跑的是旧版代码（旧版只认单一 PASSCODE）。把最新的 worker/src/index.js 重新粘贴并 Deploy 一次。";
+    } else if (msg.includes("口令不对")) {
+      hint = "代码是新的，问题在名单：确认 KV 里有一条键为「user:你的口令」的记录，且口令只含字母数字和 -_、至少 6 位。";
+    } else if (msg.includes("没配置") || msg.includes("KV")) {
+      hint = "服务器没绑好 KV：在 Worker 顶部的 Bindings 标签页加一个变量名为 INVENTORY 的 KV namespace。";
+    } else if (msg.startsWith("HTTP")) {
+      hint = "服务器返回了异常状态，检查 Worker 是否部署成功。";
+    } else {
+      hint = "请求没能送达：检查地址是否完整（带 https:// 和 .workers.dev），以及服务器的 ALLOWED_ORIGIN 是否填了本站地址。";
+    }
+    setSyncStatus("连不上：" + msg + " —— " + hint, "error");
   }
 });
 bindIfPresent("sync-pull", "click", syncPull);
