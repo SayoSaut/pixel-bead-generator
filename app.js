@@ -736,6 +736,7 @@ function computeGrid(srcW, srcH, boardSize, fillRatio) {
 // cell, which reads as noise on the board even though each individual match
 // is "correct".
 function quantizeIndices(imageData, allowed = null) {
+  allowed = allowed || scopedPalette();
   const { width: W, height: H, data } = imageData;
   const cache = new Map();
   const indices = new Int16Array(W * H);
@@ -745,12 +746,38 @@ function quantizeIndices(imageData, allowed = null) {
     const key = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
     let idx = cache.get(key);
     if (idx === undefined) {
-      idx = allowed ? nearestInPalette(r, g, b, allowed).index : nearestMardColor(r, g, b).index;
+      idx = nearestInPalette(r, g, b, allowed).index;
       cache.set(key, idx);
     }
     indices[p] = idx;
   }
   return indices;
+}
+
+// ---------- Palette scope (221 standard vs 291 full) ----------
+// Defaults to the 221 standard colors because that's what retail boxes ship
+// with: matching against colors you can't actually buy produces a pattern
+// you can't actually build. The extended P/Q/R/T/Y/ZG series are sold
+// separately, so they're opt-in.
+//
+// Crucially this is a restriction on MATCHING, not a different palette —
+// MARD_PALETTE indices stay global, so a cell's stored index means the same
+// bead in either mode and switching scope can't scramble an existing grid.
+const paletteScopeOptions = document.getElementById("palette-scope");
+let useFullPalette = false;
+
+function scopedPalette() {
+  return useFullPalette ? MARD_PALETTE : MARD_PALETTE.slice(0, MARD_STANDARD_COUNT);
+}
+
+if (paletteScopeOptions) {
+  paletteScopeOptions.addEventListener("click", (e) => {
+    const btn = e.target.closest(".seg-btn");
+    if (!btn) return;
+    useFullPalette = btn.dataset.scope === "full";
+    [...paletteScopeOptions.children].forEach((b) => b.classList.toggle("active", b === btn));
+    regenerate();
+  });
 }
 
 function nearestInPalette(r, g, b, allowed) {
@@ -848,9 +875,10 @@ function buildReducedPalette(imageData, k) {
 // genuinely needed fewer colors than requested.
 function dedupeToMard(labs) {
   const seen = new Map();
+  const pool = scopedPalette();
   for (const lab of labs) {
-    let best = MARD_PALETTE[0], bestD = Infinity;
-    for (const entry of MARD_PALETTE) {
+    let best = pool[0], bestD = Infinity;
+    for (const entry of pool) {
       const d = labDistance(lab, entry.lab);
       if (d < bestD) { bestD = d; best = entry; }
     }
@@ -1549,7 +1577,7 @@ editorSourceCanvas.addEventListener("click", (evt) => {
   const x = Math.max(0, Math.min(sourceFullResCtx.canvas.width - 1, Math.round(ox)));
   const y = Math.max(0, Math.min(sourceFullResCtx.canvas.height - 1, Math.round(oy)));
   const [r, g, b] = sourceFullResCtx.getImageData(x, y, 1, 1).data;
-  applyColorToSelection(nearestMardColor(r, g, b));
+  applyColorToSelection(nearestInPalette(r, g, b, scopedPalette()));
 });
 
 function renderEditorPatternCanvas() {
