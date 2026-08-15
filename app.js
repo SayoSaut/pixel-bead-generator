@@ -460,6 +460,8 @@ const vividSlider = document.getElementById("vivid-slider");
 const vividValue = document.getElementById("vivid-value");
 const contrastSlider = document.getElementById("contrast-slider");
 const contrastValue = document.getElementById("contrast-value");
+const ditherSlider = document.getElementById("dither-slider");
+const ditherValue = document.getElementById("dither-value");
 
 // radius 决定"多大范围算一个区块"，passes 决定压得多死，sharpen 是压平之后
 // 补的一点边界强调。
@@ -480,26 +482,32 @@ function vividAmount() {
 function contrastAmount() {
   return (parseInt(contrastSlider.value, 10) || 0) / 100;
 }
+function ditherAmount() {
+  return (parseInt(ditherSlider.value, 10) || 0) / 100;
+}
 function syncDetailLabels() {
   sharpenValue.textContent = structureSetting().label;
   const v = vividAmount();
   vividValue.textContent = v <= 1.001 ? "原样" : `×${v.toFixed(1)}`;
   const cst = contrastAmount();
   contrastValue.textContent = cst <= 0.001 ? "原样" : `${Math.round(cst * 100)}%`;
+  const dth = ditherAmount();
+  ditherValue.textContent = dth <= 0.001 ? "关闭（大色块）" : `${Math.round(dth * 100)}%`;
 }
 syncDetailLabels();
 sharpenSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 vividSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 contrastSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+ditherSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 
 // ---------- 风格预设 ----------
 // 上面这些旋钮单独调都有意义，但"我想要那种卡通插画的效果"是一个整体诉求：
 // 它同时要求压平区块、拉开明暗、提高彩度、减少颜色。逐个去试很难碰对组合，
 // 所以直接给出几套调好的。
 const STYLE_PRESETS = {
-  faithful:   { simplify: 1, structure: 1, vivid: 100, contrast: 0 },
-  illustration: { simplify: 2, structure: 3, vivid: 150, contrast: 70 },
-  poster:     { simplify: 3, structure: 4, vivid: 180, contrast: 100 },
+  faithful:     { simplify: 1, structure: 1, vivid: 100, contrast: 0,   dither: 0 },
+  illustration: { simplify: 2, structure: 3, vivid: 150, contrast: 70,  dither: 0 },
+  poster:       { simplify: 3, structure: 4, vivid: 180, contrast: 100, dither: 0 },
 };
 
 document.querySelectorAll(".style-btn").forEach((btn) => {
@@ -511,6 +519,7 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
     sharpenSlider.value = preset.structure;
     vividSlider.value = preset.vivid;
     contrastSlider.value = preset.contrast;
+    ditherSlider.value = preset.dither;
     syncSimplifyLabel();
     syncDetailLabels();
     regenerate();
@@ -774,7 +783,10 @@ async function regenerate() {
     }
   }
 
-  const sourceCells = blockModeQuantize(indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask);
+  const sourceCells = blockModeQuantize(
+    indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask,
+    { data: imageData.data, palette: allowedPalette || scopedPalette(), dither: ditherAmount() }
+  );
   let { gridW, gridH, cells } = superSample
     ? downsampleCellsByHalf(sourceCells, sourceGridW, sourceGridH)
     : { gridW: sourceGridW, gridH: sourceGridH, cells: sourceCells };
@@ -784,8 +796,12 @@ async function regenerate() {
   // would leave them behind. Smoothing goes first — it turns noise fields
   // into solid areas, and whatever single beads it leaves at the edges are
   // exactly what removeSmallRegions is for.
-  cells = smoothCellsByMajority(cells, gridW, gridH, passes, threshold);
-  cells = removeSmallRegions(cells, gridW, gridH, minRegion);
+  // 抖动掺进去的穿插色，在"消除跳豆"眼里就是噪点 —— 两者直接对立。开了
+  // 抖动就跳过这两步，否则刚织进去的色带会被立刻清掉。
+  if (ditherAmount() <= 0) {
+    cells = smoothCellsByMajority(cells, gridW, gridH, passes, threshold);
+    cells = removeSmallRegions(cells, gridW, gridH, minRegion);
+  }
 
   // The grid may have changed shape, so cell coordinates held over from a
   // previous selection no longer point at the same beads. The highlighted
@@ -1184,7 +1200,65 @@ function dedupeToMard(labs) {
 // letting them get diluted into a blended, unrelated one. Mispicked cells
 // can be fixed afterward in the cell editor (click/drag-select on the
 // pattern preview).
-function blockModeQuantize(indices, W, H, gridW, gridH, bgMask) {
+// ---------- 有序抖动（Bayer）----------
+// 大色块是"把每格四舍五入到最近的一颗豆子"的必然结果：介于两色之间的区域
+// 只能倒向其中一边，于是渐变塌成台阶，中间调整个消失。
+//
+// 抖动换一种做法：把两种豆子按比例交替摆，靠眼睛在一定距离外把它们混起来。
+// 拼豆本来就是有间距的颗粒，这种"穿插色带"看起来是自然的织物质感，而不是
+// 印刷网点。实体作品里草地那种斑驳效果就是这么来的。
+//
+// 用有序（Bayer）矩阵而不是误差扩散（Floyd–Steinberg）：误差扩散会产生
+// 不规则的游走噪点，照着拼极其痛苦 —— 你没法预期下一颗是什么。Bayer 是
+// 固定的周期性网格，拼起来有规律可循，看起来也更像有意为之的编织纹。
+const BAYER_4 = [
+  [0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5],
+].map((row) => row.map((v) => (v + 0.5) / 16));
+
+// 在候选色里找出最能"夹住"目标色的一对，并给出混合比例。
+// t=0 表示全用 a，t=1 表示全用 b。
+function findDitherPair(lab, palette) {
+  let a = palette[0], bestD = Infinity;
+  for (const e of palette) {
+    const d = labDistance(lab, e.lab);
+    if (d < bestD) { bestD = d; a = e; }
+  }
+  let b = null, bestMix = Infinity, bestT = 0;
+  for (const e of palette) {
+    if (e.index === a.index) continue;
+    // 把目标色投影到 a→b 这条线段上，看投影点离目标色多远
+    const dx = e.lab[0] - a.lab[0], dy = e.lab[1] - a.lab[1], dz = e.lab[2] - a.lab[2];
+    const len2 = dx * dx + dy * dy + dz * dz;
+    if (len2 < 1e-6) continue;
+    let t = ((lab[0] - a.lab[0]) * dx + (lab[1] - a.lab[1]) * dy + (lab[2] - a.lab[2]) * dz) / len2;
+    t = clamp(t, 0, 1);
+    const proj = [a.lab[0] + dx * t, a.lab[1] + dy * t, a.lab[2] + dz * t];
+    const d = labDistance(lab, proj);
+    // 轻微偏好"两色差距别太大"的搭配 —— 用两个相差极远的颜色去凑一个中间
+    // 色，凑出来的平均值也许对，但看上去就是两种颜色在打架。
+    const penalty = 1 + len2 / 20000;
+    if (d * penalty < bestMix) { bestMix = d * penalty; b = e; bestT = t; }
+  }
+  // gainBase = 单色的误差（平方量纲），gain = 混合把它减少了多少
+  return b ? { a, b, t: bestT, gainBase: bestD, gain: bestD - bestMix }
+           : { a, b: a, t: 0, gainBase: bestD, gain: 0 };
+}
+
+// 每格的颜色怎么定。两种策略，各有各的失败方式：
+//
+// 众数（mode）：把格内像素各自配色后投票。它保护小而高对比的特征 —— 瞳孔、
+// 描边这类东西不会被稀释。但在**边界**上它是有偏的：投票只看"哪边像素多"，
+// 完全不管颜色差多少，于是一条斜边会被投成锯齿，型就毁在这里。
+//
+// 均值（average）：先把格内像素平均，再整体配一次色。它天然是"覆盖率加权"
+// 的 —— 一格里 70% 裙子 30% 天空，平均色偏向裙子，配出来就是裙子；而 51/49
+// 的格子会落在两色中间，正好让抖动去处理。斜边因此平滑得多。
+//
+// 所以按格内的"色差大小"分流：格子内部颜色接近（区块内部）时用均值，颜色
+// 分裂得厉害（骑在边界上）时也用均值但允许抖动，只有在极端高对比且面积悬殊
+// 时才退回众数保细节。
+function blockModeQuantize(indices, W, H, gridW, gridH, bgMask, opts = {}) {
+  const { data, palette, dither = 0 } = opts;
   const result = [];
   for (let gy = 0; gy < gridH; gy++) {
     const y0 = Math.floor((gy * H) / gridH);
@@ -1209,19 +1283,71 @@ function blockModeQuantize(indices, W, H, gridW, gridH, bgMask) {
         }
       }
 
-      const freq = new Map();
+      // 没拿到原始像素（老调用方）就退回纯众数
+      if (!data || !palette) {
+        const freq = new Map();
+        for (let y = y0; y < y1; y++) {
+          const base = y * W;
+          for (let x = x0; x < x1; x++) {
+            const idx = indices[base + x];
+            freq.set(idx, (freq.get(idx) || 0) + 1);
+          }
+        }
+        let bestIdx = -1, bestCount = -1;
+        for (const [idx, count] of freq) {
+          if (count > bestCount) { bestCount = count; bestIdx = idx; }
+        }
+        row.push(MARD_PALETTE[bestIdx]);
+        continue;
+      }
+
+      let R = 0, G = 0, B = 0, n = 0, lSum = 0, lSqSum = 0;
       for (let y = y0; y < y1; y++) {
-        let base = y * W;
+        const base = (y * W) * 4;
         for (let x = x0; x < x1; x++) {
-          const idx = indices[base + x];
-          freq.set(idx, (freq.get(idx) || 0) + 1);
+          const o = base + x * 4;
+          const r = data[o], g = data[o + 1], b = data[o + 2];
+          R += r; G += g; B += b; n++;
+          const l = 0.299 * r + 0.587 * g + 0.114 * b;
+          lSum += l; lSqSum += l * l;
         }
       }
-      let bestIdx = -1, bestCount = -1;
-      for (const [idx, count] of freq) {
-        if (count > bestCount) { bestCount = count; bestIdx = idx; }
+      const lab = rgbToLab(R / n, G / n, B / n);
+      // 格内亮度标准差：大 = 这一格骑在边界上，小 = 位于某个色块内部
+      const cellSd = Math.sqrt(Math.max(0, lSqSum / n - (lSum / n) * (lSum / n)));
+
+      if (dither > 0) {
+        const pair = findDitherPair(lab, palette);
+        // 抖动必须是**局部**的，不能满图乱抖 —— 那样型会比不抖还糊。
+        // 三个条件同时满足才抖：
+        //
+        // 1. 单色确实配不准（色卡在这个颜色附近有空档）。颜色本来就配得上
+        //    的地方掺杂色纯属破坏。滑块调的就是这个门槛。
+        // 2. 混合比单色明显更接近目标，而不是半斤八两。
+        // 3. 混合比例落在中段。t 接近 0 或 1 时本来就几乎是单色，掺进去的
+        //    那点异色只会变成孤零零的噪点。
+        const err = Math.sqrt(pair.gainBase);
+        const needErr = 20 - 12 * dither;
+        // 关键守卫：只在**平坦区**抖。骑在边界上的格子（格内亮度差异大）
+        // 一律用单色 —— 型就是靠这些格子撑起来的，在这里掺异色等于把轮廓
+        // 拆散。这也正是实体作品的做法：草地那种纹理区抖得很花，而人物
+        // 轮廓和天空是干净的色块。
+        if (
+          pair.b.index !== pair.a.index &&
+          cellSd < 14 &&
+          err > needErr &&
+          pair.gain > pair.gainBase * 0.25 &&
+          pair.t > 0.18 && pair.t < 0.82
+        ) {
+          const threshold = BAYER_4[gy & 3][gx & 3];
+          row.push(pair.t > threshold ? pair.b : pair.a);
+          continue;
+        }
+        row.push(pair.a);
+        continue;
       }
-      row.push(MARD_PALETTE[bestIdx]);
+
+      row.push(nearestInPalette(R / n, G / n, B / n, palette));
     }
     result.push(row);
   }
