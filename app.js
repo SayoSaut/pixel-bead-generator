@@ -1166,6 +1166,10 @@ function setHighlight(idx) {
   }
   renderUsage(lastPattern || { cells: [] });
   updateHighlightInfo();
+  if (inventoryPanel && !inventoryPanel.hidden) {
+    setAdjustNote("");
+    renderInventoryEditor();
+  }
 }
 
 function updateHighlightInfo() {
@@ -1603,10 +1607,77 @@ function inventoryRows() {
     .map((code) => ({ code, entry: byCode.get(code), have: stockOf(code), need: need.get(code) || 0 }));
 }
 
+// ---------- Adjust the selected color by a delta ----------
+// Absolute numbers are the wrong unit for the two things that actually
+// happen to a stash: you used some, or you bought some. Both are deltas, and
+// making the user compute "I had 412, used 37, so type 375" is arithmetic
+// the page should be doing. The absolute field stays for corrections after
+// an actual recount.
+const inventoryAdjust = document.getElementById("inventory-adjust");
+
+function adjustDelta() {
+  const input = document.getElementById("inventory-adjust-value");
+  const n = Math.floor(Number(input && input.value));
+  return Number.isFinite(n) ? Math.abs(n) : 0;
+}
+
+function applyAdjust(sign) {
+  if (highlightIndex == null) return;
+  const entry = MARD_PALETTE[highlightIndex];
+  const before = stockOf(entry.code);
+  const next = before + sign * adjustDelta();
+  setStock(entry.code, next);
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+  const after = stockOf(entry.code);
+  const clamped = next < 0 ? "（不能减到负数，已停在 0）" : "";
+  setAdjustNote(`${entry.code}：${before} → ${after} 颗${clamped}`);
+}
+
+let adjustNote = "";
+function setAdjustNote(text) {
+  adjustNote = text;
+  const box = document.getElementById("inventory-adjust-note");
+  if (box) box.textContent = text;
+}
+
+function renderInventoryAdjust() {
+  if (!inventoryAdjust) return;
+  if (highlightIndex == null) {
+    inventoryAdjust.innerHTML =
+      `<p class="hint">还没选中颜色。点下面列表里的任意一行，或在图纸/用豆清单上点一个颜色，就能在这里加减。</p>`;
+    return;
+  }
+  const entry = MARD_PALETTE[highlightIndex];
+  const have = stockOf(entry.code);
+  const need = lastPattern
+    ? (countBeads(lastPattern.cells).sorted.find(([c]) => c === entry.code) || [null, { count: 0 }])[1].count
+    : 0;
+  inventoryAdjust.innerHTML =
+    `<div class="adjust-head">` +
+      `<span class="swatch" style="background:${entry.hex}"></span>` +
+      `<strong>${entry.code}</strong>` +
+      `<span class="hint">现有 ${have} 颗${need ? ` · 本图需 ${need} 颗` : ""}</span>` +
+    `</div>` +
+    `<div class="adjust-row">` +
+      `<button id="inventory-adjust-minus" class="btn-ghost">− 用掉</button>` +
+      `<input type="number" id="inventory-adjust-value" min="0" step="1" value="10" aria-label="加减数量" />` +
+      `<button id="inventory-adjust-plus" class="btn-ghost">+ 补货</button>` +
+    `</div>` +
+    `<p class="hint" id="inventory-adjust-note">${adjustNote}</p>`;
+  document.getElementById("inventory-adjust-plus").addEventListener("click", () => applyAdjust(1));
+  document.getElementById("inventory-adjust-minus").addEventListener("click", () => applyAdjust(-1));
+  // 回车默认按"补货"处理：拆一包豆子倒进盒子是最常发生的那件事。
+  document.getElementById("inventory-adjust-value").addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter") { evt.preventDefault(); applyAdjust(1); }
+  });
+}
+
 function renderInventoryEditor() {
   if (!inventoryList) return;
   updateBulkScope();
   updateSyncWhere();
+  renderInventoryAdjust();
   const rows = inventoryRows();
   inventoryList.innerHTML = "";
   if (!rows.length) {
@@ -1615,12 +1686,22 @@ function renderInventoryEditor() {
   }
   for (const { code, entry, have, need } of rows) {
     const row = document.createElement("div");
-    row.className = "inv-row" + (need && have < need ? " is-short" : "");
+    row.className = "inv-row" + (need && have < need ? " is-short" : "") +
+      (entry.index === highlightIndex ? " is-selected" : "");
     row.innerHTML =
       `<span class="swatch" style="background:${entry.hex}"></span>` +
       `<span class="inv-code">${code}</span>` +
       `<span class="inv-need">${need ? `本图需 ${need}` : ""}</span>` +
       `<input type="number" min="0" step="1" value="${have}" class="inv-input" aria-label="${code} 库存" />`;
+    // 点行选中该色（点输入框时不触发，否则改数字会被打断重绘）
+    row.addEventListener("click", (evt) => {
+      if (evt.target.classList.contains("inv-input")) return;
+      highlightIndex = entry.index === highlightIndex ? null : entry.index;
+      setAdjustNote("");
+      if (lastPattern) { renderPattern(lastPattern); renderUsage(lastPattern); }
+      updateHighlightInfo();
+      renderInventoryEditor();
+    });
     const input = row.querySelector(".inv-input");
     input.addEventListener("change", () => {
       setStock(code, input.value);

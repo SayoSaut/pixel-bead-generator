@@ -805,3 +805,28 @@ tbody tr:hover { background: var(--bg); }
 
 .sync-intro { background: var(--bg); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px; }
 .sync-intro .hint:last-child { margin-bottom: 0; }
+
+/* ---------- Inventory: adjust selected color ---------- */
+
+.inv-adjust { font-size: 12.5px; }
+.adjust-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.adjust-head strong { font-size: 14px; color: var(--accent); }
+.adjust-head .hint { margin: 0; }
+
+.adjust-row { display: flex; gap: 6px; align-items: center; }
+.adjust-row input {
+  width: 96px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.adjust-row input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+#inventory-adjust-note { margin: 8px 0 0; }
+
+.inv-row { cursor: pointer; }
+.inv-row.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+.inv-row.is-selected .inv-code { color: var(--accent); }
