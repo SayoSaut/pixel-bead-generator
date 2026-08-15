@@ -830,3 +830,21 @@ tbody tr:hover { background: var(--bg); }
 .inv-row { cursor: pointer; }
 .inv-row.is-selected { border-color: var(--accent); background: var(--accent-soft); }
 .inv-row.is-selected .inv-code { color: var(--accent); }
+
+.inv-step {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-2);
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.inv-step:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.inv-row .inv-input { width: 60px; }
+.inv-list { grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); }

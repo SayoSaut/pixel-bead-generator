@@ -838,6 +838,24 @@ tbody tr:hover { background: var(--bg); }
 .inv-row.is-selected { border-color: var(--accent); background: var(--accent-soft); }
 .inv-row.is-selected .inv-code { color: var(--accent); }
 
+.inv-step {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-2);
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.inv-step:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.inv-row .inv-input { width: 60px; }
+.inv-list { grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); }
+
 </style>
 </head>
 <body>
@@ -2421,10 +2439,6 @@ function setHighlight(idx) {
   }
   renderUsage(lastPattern || { cells: [] });
   updateHighlightInfo();
-  if (inventoryPanel && !inventoryPanel.hidden) {
-    setAdjustNote("");
-    renderInventoryEditor();
-  }
 }
 
 function updateHighlightInfo() {
@@ -2862,13 +2876,21 @@ function inventoryRows() {
     .map((code) => ({ code, entry: byCode.get(code), have: stockOf(code), need: need.get(code) || 0 }));
 }
 
-// ---------- Adjust the selected color by a delta ----------
+// ---------- Adjust a single color by a delta ----------
 // Absolute numbers are the wrong unit for the two things that actually
 // happen to a stash: you used some, or you bought some. Both are deltas, and
 // making the user compute "I had 412, used 37, so type 375" is arithmetic
 // the page should be doing. The absolute field stays for corrections after
 // an actual recount.
+//
+// Selection here is the INVENTORY row, deliberately kept separate from the
+// pattern's highlighted color. They answer different questions — "which
+// bead am I looking for on the chart" vs "which row am I editing" — and
+// tying them together meant opening the stock panel silently repainted the
+// chart behind it.
 const inventoryAdjust = document.getElementById("inventory-adjust");
+let invSelected = null; // 色号字符串
+let adjustNote = "";
 
 function adjustDelta() {
   const input = document.getElementById("inventory-adjust-value");
@@ -2876,55 +2898,72 @@ function adjustDelta() {
   return Number.isFinite(n) ? Math.abs(n) : 0;
 }
 
-function applyAdjust(sign) {
-  if (highlightIndex == null) return;
-  const entry = MARD_PALETTE[highlightIndex];
-  const before = stockOf(entry.code);
-  const next = before + sign * adjustDelta();
-  setStock(entry.code, next);
-  if (lastPattern) renderUsage(lastPattern);
-  renderInventoryEditor();
-  const after = stockOf(entry.code);
-  const clamped = next < 0 ? "（不能减到负数，已停在 0）" : "";
-  setAdjustNote(`${entry.code}：${before} → ${after} 颗${clamped}`);
-}
-
-let adjustNote = "";
 function setAdjustNote(text) {
   adjustNote = text;
   const box = document.getElementById("inventory-adjust-note");
   if (box) box.textContent = text;
 }
 
+// sign: +1 补货 / -1 用掉。code 省略时作用于当前选中的行。
+function applyAdjust(sign, code) {
+  const target = code || invSelected;
+  if (!target) return;
+  const before = stockOf(target);
+  const next = before + sign * adjustDelta();
+  setStock(target, next);
+  invSelected = target;
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+  const after = stockOf(target);
+  setAdjustNote(`${target}：${before} → ${after} 颗${next < 0 ? "（不能减到负数，已停在 0）" : ""}`);
+}
+
+function selectInventoryRow(code) {
+  invSelected = invSelected === code ? null : code;
+  setAdjustNote("");
+  renderInventoryEditor();
+}
+
 function renderInventoryAdjust() {
   if (!inventoryAdjust) return;
-  if (highlightIndex == null) {
+  const amount = `<input type="number" id="inventory-adjust-value" min="0" step="1" value="${adjustDelta() || 10}" aria-label="加减数量" />`;
+
+  if (!invSelected) {
     inventoryAdjust.innerHTML =
-      `<p class="hint">还没选中颜色。点下面列表里的任意一行，或在图纸/用豆清单上点一个颜色，就能在这里加减。</p>`;
+      `<p class="hint">点下面列表里的任意一行选中它，就能在这里加减。也可以直接用每行右边的 <b>−</b> / <b>+</b> 按钮。</p>` +
+      `<div class="adjust-row"><span class="hint">每次加减</span>${amount}<span class="hint">颗</span></div>`;
+    bindAdjustAmount();
     return;
   }
-  const entry = MARD_PALETTE[highlightIndex];
-  const have = stockOf(entry.code);
+
+  const entry = MARD_PALETTE.find((e) => e.code === invSelected);
+  const have = stockOf(invSelected);
   const need = lastPattern
-    ? (countBeads(lastPattern.cells).sorted.find(([c]) => c === entry.code) || [null, { count: 0 }])[1].count
+    ? (countBeads(lastPattern.cells).sorted.find(([c]) => c === invSelected) || [null, { count: 0 }])[1].count
     : 0;
   inventoryAdjust.innerHTML =
     `<div class="adjust-head">` +
-      `<span class="swatch" style="background:${entry.hex}"></span>` +
-      `<strong>${entry.code}</strong>` +
+      `<span class="swatch" style="background:${entry ? entry.hex : "#fff"}"></span>` +
+      `<strong>${invSelected}</strong>` +
       `<span class="hint">现有 ${have} 颗${need ? ` · 本图需 ${need} 颗` : ""}</span>` +
     `</div>` +
     `<div class="adjust-row">` +
       `<button id="inventory-adjust-minus" class="btn-ghost">− 用掉</button>` +
-      `<input type="number" id="inventory-adjust-value" min="0" step="1" value="10" aria-label="加减数量" />` +
+      amount +
       `<button id="inventory-adjust-plus" class="btn-ghost">+ 补货</button>` +
     `</div>` +
     `<p class="hint" id="inventory-adjust-note">${adjustNote}</p>`;
   document.getElementById("inventory-adjust-plus").addEventListener("click", () => applyAdjust(1));
   document.getElementById("inventory-adjust-minus").addEventListener("click", () => applyAdjust(-1));
+  bindAdjustAmount();
+}
+
+function bindAdjustAmount() {
+  const input = document.getElementById("inventory-adjust-value");
+  if (!input) return;
   // 回车默认按"补货"处理：拆一包豆子倒进盒子是最常发生的那件事。
-  document.getElementById("inventory-adjust-value").addEventListener("keydown", (evt) => {
-    if (evt.key === "Enter") { evt.preventDefault(); applyAdjust(1); }
+  input.addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter" && invSelected) { evt.preventDefault(); applyAdjust(1); }
   });
 }
 
@@ -2942,26 +2981,34 @@ function renderInventoryEditor() {
   for (const { code, entry, have, need } of rows) {
     const row = document.createElement("div");
     row.className = "inv-row" + (need && have < need ? " is-short" : "") +
-      (entry.index === highlightIndex ? " is-selected" : "");
+      (code === invSelected ? " is-selected" : "");
     row.innerHTML =
       `<span class="swatch" style="background:${entry.hex}"></span>` +
       `<span class="inv-code">${code}</span>` +
       `<span class="inv-need">${need ? `本图需 ${need}` : ""}</span>` +
-      `<input type="number" min="0" step="1" value="${have}" class="inv-input" aria-label="${code} 库存" />`;
-    // 点行选中该色（点输入框时不触发，否则改数字会被打断重绘）
+      `<button class="inv-step" data-step="-1" title="用掉">−</button>` +
+      `<input type="number" min="0" step="1" value="${have}" class="inv-input" aria-label="${code} 库存" />` +
+      `<button class="inv-step" data-step="1" title="补货">+</button>`;
+
+    // 点行选中它作为上方加减的目标。这里只影响库存面板 —— 不去动画板的
+    // 高亮，那是另一个问题的答案（"这颗豆子在图纸哪儿"）。
     row.addEventListener("click", (evt) => {
-      if (evt.target.classList.contains("inv-input")) return;
-      highlightIndex = entry.index === highlightIndex ? null : entry.index;
-      setAdjustNote("");
-      if (lastPattern) { renderPattern(lastPattern); renderUsage(lastPattern); }
-      updateHighlightInfo();
-      renderInventoryEditor();
+      if (evt.target.classList.contains("inv-input") || evt.target.classList.contains("inv-step")) return;
+      selectInventoryRow(code);
     });
+
+    // 每行自带加减，不必先选中 —— 想快速调几个颜色时少一次点击。
+    for (const btn of row.querySelectorAll(".inv-step")) {
+      btn.addEventListener("click", () => applyAdjust(Number(btn.dataset.step), code));
+    }
+
     const input = row.querySelector(".inv-input");
     input.addEventListener("change", () => {
       setStock(code, input.value);
+      invSelected = code;
       if (lastPattern) renderUsage(lastPattern);
-      row.classList.toggle("is-short", !!need && stockOf(code) < need);
+      renderInventoryEditor();
+      setAdjustNote(`${code}：已直接设为 ${stockOf(code)} 颗`);
     });
     inventoryList.appendChild(row);
   }
