@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>拼豆图纸生成器 - Mard 221色</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>拼豆图纸生成器</h1>
+    <p class="subtitle">上传图片，自动生成 Mard 221 色拼豆图纸与用量清单</p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="control-group">
+        <label for="file-input">1. 上传图片</label>
+        <input type="file" id="file-input" accept="image/*" />
+      </div>
+
+      <div class="control-group">
+        <label>2. 裁剪范围（已自动框选细节最多的区域，可拖动边框/角点调整）</label>
+        <button id="reset-crop" class="secondary-btn">重置为自动裁剪</button>
+      </div>
+
+      <div class="control-group">
+        <div class="recommend-box" id="recommend-box">上传图片后自动分析推荐规格…</div>
+        <button id="apply-recommend" class="secondary-btn">应用推荐</button>
+      </div>
+
+      <div class="control-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cutout-enabled" />
+          抠图（未识别为物体的格子不放豆子）
+        </label>
+        <div class="board-options" id="cutout-mode-options" style="margin-top:6px;">
+          <button class="board-btn cutout-mode-btn active" data-mode="color">颜色泛洪</button>
+          <button class="board-btn cutout-mode-btn" data-mode="ml">ML 人像（需联网）</button>
+          <button class="board-btn cutout-mode-btn" data-mode="general">通用物体（需联网，首次约40MB）</button>
+        </div>
+        <div id="cutout-color-controls">
+          <label for="cutout-tolerance" class="sub-label">背景容差（滑块前段精细，后段粗略，方便微调小范围）</label>
+          <input type="range" id="cutout-tolerance" min="0" max="100" step="1" value="41" />
+          <span id="cutout-tolerance-value">25</span>
+        </div>
+        <div class="sub-label" id="ml-status" style="display:none;"></div>
+      </div>
+
+      <div class="control-group">
+        <label>3. 选择板子规格</label>
+        <div class="board-options" id="board-options">
+          <button class="board-btn" data-size="52">52×52</button>
+          <button class="board-btn" data-size="78">78×78</button>
+          <button class="board-btn" data-size="104">104×104</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label for="fill-slider">4. 画面占板比例（不需要顶格可调小）</label>
+        <input type="range" id="fill-slider" min="0.3" max="1.0" step="0.05" value="1.0" />
+        <span id="fill-value">100%</span>
+      </div>
+
+      <div class="control-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="allow-rect" checked />
+          保持裁剪框原比例（取消则再裁成正方形）
+        </label>
+      </div>
+
+      <div class="result-info" id="result-info"></div>
+
+      <div class="control-group export-group">
+        <button id="export-png" disabled>导出图纸 PNG</button>
+        <button id="export-csv" disabled>导出用量清单 CSV</button>
+      </div>
+    </section>
+
+    <section class="preview">
+      <div class="preview-col">
+        <h2>原图（拖动方框或角点调整裁剪范围）</h2>
+        <canvas id="source-canvas"></canvas>
+      </div>
+      <div class="preview-col pattern-col">
+        <div class="pattern-header">
+          <h2>拼豆图纸预览</h2>
+          <div class="zoom-toolbar">
+            <button id="zoom-out" class="zoom-btn">－</button>
+            <span id="zoom-label">100%</span>
+            <button id="zoom-in" class="zoom-btn">＋</button>
+            <button id="zoom-fit" class="zoom-btn">适应宽度</button>
+          </div>
+        </div>
+        <div class="sub-label">点击或拖拽框选格子，进入编辑修正局部颜色</div>
+        <div class="pattern-wrap">
+          <canvas id="pattern-canvas"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section class="usage">
+      <h2>用豆清单</h2>
+      <table id="usage-table">
+        <thead>
+          <tr><th>色号</th><th>色块</th><th>颗数</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <section class="cell-editor" id="cell-editor" hidden>
+    <div class="cell-editor-header">
+      <h2>格子编辑</h2>
+      <div class="cell-editor-selection-info" id="editor-selection-info">未选中格子</div>
+      <button id="editor-exit" class="secondary-btn">← 返回预览</button>
+    </div>
+    <div class="cell-editor-body">
+      <div class="editor-col">
+        <h3>原图（点击吸取该处颜色，应用到已选格子）</h3>
+        <canvas id="editor-source-canvas"></canvas>
+      </div>
+      <div class="editor-col editor-col-pattern">
+        <h3>图纸（拖拽框选要改的格子）</h3>
+        <div class="recommend-colors" id="editor-recommend-colors"></div>
+        <div class="pattern-wrap">
+          <canvas id="editor-pattern-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Loaded on demand, only used when "ML 人像" cutout mode is selected -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js"></script>
+  <script src="palette.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
