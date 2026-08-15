@@ -508,6 +508,35 @@ th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--bor
 tbody tr { transition: background 0.12s var(--ease); }
 tbody tr:hover { background: var(--bg); }
 
+.usage-row { cursor: pointer; }
+.usage-row.is-active {
+  background: var(--accent-soft) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.usage-row.is-active td:first-child { font-weight: 700; color: var(--accent); }
+
+.highlight-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--accent-soft);
+  border: 1px solid #f6d5bd;
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  margin-bottom: 10px;
+}
+.highlight-info strong { color: var(--accent); font-size: 13.5px; }
+.highlight-info .btn-ghost { margin-left: auto; }
+.hl-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
 .usage-total td {
   font-weight: 700;
   border-top: 1.5px solid var(--border-strong);
@@ -752,7 +781,8 @@ tbody tr:hover { background: var(--bg); }
             <button id="zoom-fit" class="btn-ghost">适应宽度</button>
           </div>
         </div>
-        <p class="hint">拖拽框选格子进入编辑，按住 <kbd>Shift</kbd> 可累加选区。</p>
+        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
+        <div class="highlight-info" id="highlight-info" hidden></div>
         <div class="pattern-wrap">
           <canvas id="pattern-canvas"></canvas>
         </div>
@@ -761,7 +791,7 @@ tbody tr:hover { background: var(--bg); }
       <div class="card usage">
         <div class="card-head">
           <h2>用豆清单</h2>
-          <span class="hint">按色号排序，图纸下方也会打印一份</span>
+          <span class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</span>
         </div>
         <div class="table-wrap">
           <table id="usage-table">
@@ -1483,11 +1513,15 @@ async function regenerate() {
   cells = removeSmallRegions(cells, gridW, gridH, minRegion);
 
   // The grid may have changed shape, so cell coordinates held over from a
-  // previous selection no longer point at the same beads.
+  // previous selection no longer point at the same beads. The highlighted
+  // color may not even exist in the new pattern (a different palette scope
+  // or simplification level drops colors entirely), so it goes too.
   editorSelection = new Set();
+  highlightIndex = null;
   lastPattern = { gridW, gridH, cells };
   renderPattern(lastPattern);
   renderUsage(lastPattern);
+  updateHighlightInfo();
 
   if (boardSize !== lastZoomedBoardSize) {
     lastZoomedBoardSize = boardSize;
@@ -2102,6 +2136,46 @@ function countBeads(cells) {
 // selection outline. `withLegend` appends the color/count list underneath;
 // the editor leaves it off so the workbench canvas stays compact and the
 // legend can't be mistaken for editable cells.
+// ---------- Color highlight / per-row counting ----------
+// Placing beads means working one color at a time: you pour out the C20s,
+// then hunt for every C20 on the chart. Highlighting dims everything else so
+// the search is trivial, and numbering each row's hits left-to-right turns
+// "find them" into "count along to 3".
+let highlightIndex = null; // MARD_PALETTE index, or null
+
+function setHighlight(idx) {
+  highlightIndex = highlightIndex === idx ? null : idx;
+  if (lastPattern) {
+    renderPattern(lastPattern);
+    if (!cellEditor.hidden) renderEditorPatternCanvas();
+  }
+  renderUsage(lastPattern || { cells: [] });
+  updateHighlightInfo();
+}
+
+function updateHighlightInfo() {
+  const box = document.getElementById("highlight-info");
+  if (!box) return;
+  if (highlightIndex == null || !lastPattern) {
+    box.hidden = true;
+    return;
+  }
+  const entry = MARD_PALETTE[highlightIndex];
+  let total = 0, rows = 0, maxRow = 0;
+  for (const row of lastPattern.cells) {
+    let n = 0;
+    for (const c of row) if (c && c.index === highlightIndex) n++;
+    if (n) { rows++; if (n > maxRow) maxRow = n; }
+    total += n;
+  }
+  box.hidden = false;
+  box.innerHTML =
+    `<span class="hl-swatch" style="background:${entry.hex}"></span>` +
+    `<strong>${entry.code}</strong> 共 ${total} 颗 · 分布在 ${rows} 行 · 单行最多 ${maxRow} 颗` +
+    `<button id="highlight-clear" class="btn-ghost">取消高亮</button>`;
+  document.getElementById("highlight-clear").addEventListener("click", () => setHighlight(null));
+}
+
 // ---------- Guide lines every 10 cells, with row/column numbers ----------
 // The decade lines are centered on the board rather than started from the
 // left edge, so the leftover cells split evenly as a margin on both sides:
@@ -2192,18 +2266,45 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
+  // When a color is highlighted, its cells get a per-row running number
+  // instead of the color code, and every other cell is washed out. The
+  // number restarts on each row because you place beads a row at a time:
+  // "this is the 3rd C20 in this row" is directly actionable, whereas a
+  // running total across the whole board tells you nothing about where you
+  // are in the row you're currently working on.
+  const hl = highlightIndex;
   for (let gy = 0; gy < gridH; gy++) {
+    let rowSeq = 0;
     for (let gx = 0; gx < gridW; gx++) {
       const cell = cells[gy][gx];
       if (!cell) continue; // cut out — leave the empty peg-hole background showing
       const { hex, code, rgb } = cell;
       const px = (offsetX + gx) * CELL_PX, py = (offsetY + gy) * CELL_PX;
+      const isHit = hl != null && cell.index === hl;
+      if (isHit) rowSeq++;
+
+      ctx.globalAlpha = hl == null || isHit ? 1 : 0.22;
       ctx.fillStyle = hex;
       ctx.fillRect(px, py, CELL_PX, CELL_PX);
+      ctx.globalAlpha = 1;
+
+      if (hl != null && !isHit) continue; // dimmed cells stay unlabelled, so the numbers pop
 
       const luminance = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
-      ctx.fillStyle = luminance > 0.55 ? "#222" : "#fff";
-      ctx.fillText(code, px + CELL_PX / 2, py + CELL_PX / 2 + 1);
+      if (isHit) {
+        // Ring the cell so the highlighted color is findable even where its
+        // own hue is close to a neighbour's.
+        ctx.strokeStyle = "#e8590c";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(px + 1, py + 1, CELL_PX - 2, CELL_PX - 2);
+        ctx.font = `bold ${Math.round(CELL_PX * 0.5)}px sans-serif`;
+        ctx.fillStyle = luminance > 0.55 ? "#111" : "#fff";
+        ctx.fillText(String(rowSeq), px + CELL_PX / 2, py + CELL_PX / 2 + 1);
+        ctx.font = `bold ${Math.round(CELL_PX * 0.36)}px sans-serif`;
+      } else {
+        ctx.fillStyle = luminance > 0.55 ? "#222" : "#fff";
+        ctx.fillText(code, px + CELL_PX / 2, py + CELL_PX / 2 + 1);
+      }
     }
   }
 
@@ -2308,16 +2409,20 @@ function drawLegend(ctx, { sorted, total }, top, canvasWidth) {
 
 function renderUsage({ cells }) {
   const { sorted, total } = countBeads(cells);
+  const codeToIndex = new Map(MARD_PALETTE.map((e) => [e.code, e.index]));
 
   usageTableBody.innerHTML = "";
   for (const [code, { hex, count }] of sorted) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${code}</td><td><span class="swatch" style="background:${hex}"></span></td><td>${count}</td>`;
+    const idx = codeToIndex.get(code);
+    tr.className = "usage-row" + (idx === highlightIndex ? " is-active" : "");
+    tr.innerHTML = `<td>${code}</td><td><span class="swatch" style="background:${hex}"></span></td><td class="num">${count}</td>`;
+    tr.addEventListener("click", () => setHighlight(idx));
     usageTableBody.appendChild(tr);
   }
   const tr = document.createElement("tr");
   tr.className = "usage-total";
-  tr.innerHTML = `<td>合计</td><td>${sorted.length} 色</td><td>${total}</td>`;
+  tr.innerHTML = `<td>合计</td><td>${sorted.length} 色</td><td class="num">${total}</td>`;
   usageTableBody.appendChild(tr);
 }
 
@@ -2440,7 +2545,20 @@ window.addEventListener("mousemove", (evt) => {
 
 window.addEventListener("mouseup", () => {
   if (!selectDrag) return;
-  const { onCommit } = selectDrag;
+  const { onCommit, moved, additive, anchor, canvasEl } = selectDrag;
+
+  // On the MAIN preview a plain click (no drag, no Shift) means "tell me
+  // about this color" rather than "edit this one cell" — you click a bead to
+  // light up every other bead of the same color. Dragging still means edit,
+  // and Shift still means build a selection, so nothing is taken away.
+  if (canvasEl === patternCanvas && !moved && !additive) {
+    selectDrag = null;
+    editorSelection = new Set();
+    const cell = lastPattern && lastPattern.cells[anchor.gy] && lastPattern.cells[anchor.gy][anchor.gx];
+    setHighlight(cell ? cell.index : null);
+    return;
+  }
+
   const sel = dragSelection();
   selectDrag = null;
   editorSelection = sel;
@@ -2803,9 +2921,20 @@ function updateEditorSelectionInfo() {
 
 exportPngBtn.addEventListener("click", () => {
   if (!lastPattern) return;
+  // Export the full chart, never the dimmed single-color view: the highlight
+  // is a way of reading the pattern on screen, not a variant of it, and a
+  // washed-out PNG with only one color legible is never what someone means
+  // by "导出图纸". The on-screen highlight is restored right after.
+  const saved = highlightIndex;
+  highlightIndex = null;
+  renderPattern(lastPattern);
+  const url = patternCanvas.toDataURL("image/png");
+  highlightIndex = saved;
+  renderPattern(lastPattern);
+
   const a = document.createElement("a");
   a.download = `拼豆图纸_${boardSize}x${boardSize}.png`;
-  a.href = patternCanvas.toDataURL("image/png");
+  a.href = url;
   a.click();
 });
 

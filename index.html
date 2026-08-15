@@ -132,7 +132,8 @@
             <button id="zoom-fit" class="btn-ghost">适应宽度</button>
           </div>
         </div>
-        <p class="hint">拖拽框选格子进入编辑，按住 <kbd>Shift</kbd> 可累加选区。</p>
+        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
+        <div class="highlight-info" id="highlight-info" hidden></div>
         <div class="pattern-wrap">
           <canvas id="pattern-canvas"></canvas>
         </div>
@@ -141,7 +142,7 @@
       <div class="card usage">
         <div class="card-head">
           <h2>用豆清单</h2>
-          <span class="hint">按色号排序，图纸下方也会打印一份</span>
+          <span class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</span>
         </div>
         <div class="table-wrap">
           <table id="usage-table">
