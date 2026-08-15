@@ -1,0 +1,17 @@
+name = "pixel-bead-inventory"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# 允许访问这个 API 的前端地址。部署后改成你自己的 Pages 地址。
+# 本地用 file:// 打开页面调试时浏览器发的 Origin 是 "null"，那种情况下
+# 可以临时填 "*"，但公开部署时不要留 "*"。
+[vars]
+ALLOWED_ORIGIN = "https://sayosaut.github.io"
+
+# 运行 `wrangler kv namespace create INVENTORY` 后，把它输出的 id 填进来。
+[[kv_namespaces]]
+binding = "INVENTORY"
+id = "在这里填 KV namespace 的 id"
+
+# 口令不写在这个文件里 —— 这个文件会进公开仓库。
+# 用 `wrangler secret put PASSCODE` 单独设置。

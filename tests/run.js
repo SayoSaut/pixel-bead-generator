@@ -1,7 +1,7 @@
 // 一次跑完所有测试：node tests/run.js
 const { execFileSync } = require("child_process");
 const fs = require("fs"), path = require("path");
-const files = fs.readdirSync(__dirname).filter((f) => f.startsWith("test_")).sort();
+const files = fs.readdirSync(__dirname).filter((f) => /^test_.*\.m?js$/.test(f)).sort();
 let failed = 0;
 for (const f of files) {
   try {

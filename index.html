@@ -177,6 +177,31 @@
         <button id="inventory-clear" class="btn-ghost danger">清空</button>
       </div>
       <div class="inv-list" id="inventory-list"></div>
+
+      <details class="sync-box">
+        <summary>跨设备同步（可选）</summary>
+        <p class="hint">
+          填上自建的同步服务器后，库存会存到云端，换电脑/手机也能接着用。
+          不填就只存在这台设备的浏览器里。部署方法见仓库里的 <code>worker/</code>。
+        </p>
+        <div class="sync-form">
+          <label>服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
+          <label>共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
+          <label>档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
+        </div>
+        <label class="switch sync-auto-row">
+          <input type="checkbox" id="sync-auto" />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
+        </label>
+        <div class="inv-tools">
+          <button id="sync-save" class="btn-ghost">保存设置</button>
+          <button id="sync-pull" class="btn-ghost">从云端拉取</button>
+          <button id="sync-push" class="btn-ghost">上传到云端</button>
+        </div>
+        <div class="sync-status" id="sync-status" hidden></div>
+        <p class="hint">口令只保存在你自己的浏览器里，不会进代码仓库。拿到口令的人可以读写所有档案，所以只发给信得过的人。</p>
+      </details>
     </div>
   </section>
 

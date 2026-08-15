@@ -627,6 +627,57 @@ tbody tr:hover { background: var(--bg); }
 }
 .inv-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 
+.sync-box {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.sync-box summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+.sync-box code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.sync-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sync-form label { display: block; font-size: 12px; color: var(--ink-2); font-weight: 550; }
+.sync-form input {
+  width: 100%;
+  margin-top: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12.5px;
+}
+.sync-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+.sync-auto-row { margin-bottom: 10px; }
+
+.sync-status {
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+}
+.sync-status.is-ok { background: #eefaf1; border-color: #bfe6cc; color: #1d6b3a; }
+.sync-status.is-error { background: #fff1ef; border-color: #f3c8c2; color: #b42318; }
+
 /* ---------- Cell editor ---------- */
 
 .cell-editor {
@@ -900,6 +951,31 @@ tbody tr:hover { background: var(--bg); }
         <button id="inventory-clear" class="btn-ghost danger">清空</button>
       </div>
       <div class="inv-list" id="inventory-list"></div>
+
+      <details class="sync-box">
+        <summary>跨设备同步（可选）</summary>
+        <p class="hint">
+          填上自建的同步服务器后，库存会存到云端，换电脑/手机也能接着用。
+          不填就只存在这台设备的浏览器里。部署方法见仓库里的 <code>worker/</code>。
+        </p>
+        <div class="sync-form">
+          <label>服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
+          <label>共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
+          <label>档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
+        </div>
+        <label class="switch sync-auto-row">
+          <input type="checkbox" id="sync-auto" />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
+        </label>
+        <div class="inv-tools">
+          <button id="sync-save" class="btn-ghost">保存设置</button>
+          <button id="sync-pull" class="btn-ghost">从云端拉取</button>
+          <button id="sync-push" class="btn-ghost">上传到云端</button>
+        </div>
+        <div class="sync-status" id="sync-status" hidden></div>
+        <p class="hint">口令只保存在你自己的浏览器里，不会进代码仓库。拿到口令的人可以读写所有档案，所以只发给信得过的人。</p>
+      </details>
     </div>
   </section>
 
@@ -2570,6 +2646,9 @@ function setStock(code, n) {
   const v = Math.max(0, Math.floor(Number(n) || 0));
   if (v) inventory[code] = v; else delete inventory[code];
   saveStored(INVENTORY_KEY, inventory);
+  // 所有改动库存的路径（手动改、补齐、扣减、导入 CSV）最终都会走到这里，
+  // 所以自动上传只需要挂在这一个点上。
+  if (typeof scheduleSyncPush === "function") scheduleSyncPush();
 }
 
 // What the current pattern needs vs. what's on hand.
@@ -2764,6 +2843,110 @@ bindIfPresent("inventory-export", "click", () => {
   a.href = URL.createObjectURL(blob);
   a.click();
 });
+
+// ---------- Cloud sync (optional) ----------
+// Talks to the little Cloudflare Worker in worker/. Entirely opt-in: with no
+// server configured everything above keeps working exactly as before, purely
+// in this browser. The settings live in localStorage rather than in the
+// source, because the repo is public — a passcode committed to it would be a
+// passcode published to the world.
+const SYNC_KEY = "pixel-bead-sync-v1";
+let syncConfig = loadStored(SYNC_KEY, { url: "", passcode: "", profile: "" });
+
+const syncStatusBox = document.getElementById("sync-status");
+const syncUrlInput = document.getElementById("sync-url");
+const syncPassInput = document.getElementById("sync-passcode");
+const syncProfileInput = document.getElementById("sync-profile");
+
+function syncReady() {
+  return !!(syncConfig.url && syncConfig.passcode && syncConfig.profile);
+}
+
+function setSyncStatus(text, kind) {
+  if (!syncStatusBox) return;
+  syncStatusBox.textContent = text || "";
+  syncStatusBox.className = "sync-status" + (kind ? " is-" + kind : "");
+  syncStatusBox.hidden = !text;
+}
+
+async function syncRequest(path, options = {}) {
+  const base = syncConfig.url.replace(/\/+$/, "");
+  const res = await fetch(base + path, {
+    ...options,
+    headers: {
+      Authorization: "Bearer " + syncConfig.passcode,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 保留 null，下面按状态码报错 */ }
+  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  return data;
+}
+
+async function syncPull() {
+  if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
+  setSyncStatus("正在从云端读取…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    inventory = data.inventory || {};
+    saveStored(INVENTORY_KEY, inventory);
+    if (lastPattern) renderUsage(lastPattern);
+    renderInventoryEditor();
+    const when = data.updatedAt ? new Date(data.updatedAt).toLocaleString() : "从未保存";
+    setSyncStatus(`已拉取「${syncConfig.profile}」的库存（云端更新于 ${when}）`, "ok");
+  } catch (err) {
+    setSyncStatus("拉取失败：" + err.message, "error");
+  }
+}
+
+async function syncPush() {
+  if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
+  setSyncStatus("正在上传…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile), {
+      method: "PUT",
+      body: JSON.stringify({ inventory }),
+    });
+    setSyncStatus(`已上传到「${syncConfig.profile}」（${new Date(data.updatedAt).toLocaleString()}）`, "ok");
+  } catch (err) {
+    setSyncStatus("上传失败：" + err.message, "error");
+  }
+}
+
+// KV 免费额度是每天 1000 次写、10 万次读，写比读金贵一百倍。手动改库存时
+// 每敲一个数字就传一次很容易把写额度耗掉，所以合并成一次延迟上传。
+let syncTimer = null;
+function scheduleSyncPush() {
+  if (!syncReady() || !syncConfig.autoPush) return;
+  clearTimeout(syncTimer);
+  setSyncStatus("有改动，稍后自动上传…");
+  syncTimer = setTimeout(syncPush, 2500);
+}
+
+bindIfPresent("sync-save", "click", () => {
+  syncConfig = {
+    url: (syncUrlInput.value || "").trim(),
+    passcode: (syncPassInput.value || "").trim(),
+    profile: (syncProfileInput.value || "").trim(),
+    autoPush: document.getElementById("sync-auto").checked,
+  };
+  saveStored(SYNC_KEY, syncConfig);
+  setSyncStatus(syncReady() ? "已保存同步设置" : "还缺信息：地址、口令、档案名都要填", syncReady() ? "ok" : "error");
+});
+bindIfPresent("sync-pull", "click", syncPull);
+bindIfPresent("sync-push", "click", syncPush);
+
+function restoreSyncForm() {
+  if (!syncUrlInput) return;
+  syncUrlInput.value = syncConfig.url || "";
+  syncPassInput.value = syncConfig.passcode || "";
+  syncProfileInput.value = syncConfig.profile || "";
+  const auto = document.getElementById("sync-auto");
+  if (auto) auto.checked = !!syncConfig.autoPush;
+}
+restoreSyncForm();
 
 bindIfPresent("inventory-import", "change", (evt) => {
   const file = evt.target.files[0];

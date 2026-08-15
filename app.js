@@ -1485,6 +1485,9 @@ function setStock(code, n) {
   const v = Math.max(0, Math.floor(Number(n) || 0));
   if (v) inventory[code] = v; else delete inventory[code];
   saveStored(INVENTORY_KEY, inventory);
+  // 所有改动库存的路径（手动改、补齐、扣减、导入 CSV）最终都会走到这里，
+  // 所以自动上传只需要挂在这一个点上。
+  if (typeof scheduleSyncPush === "function") scheduleSyncPush();
 }
 
 // What the current pattern needs vs. what's on hand.
@@ -1679,6 +1682,110 @@ bindIfPresent("inventory-export", "click", () => {
   a.href = URL.createObjectURL(blob);
   a.click();
 });
+
+// ---------- Cloud sync (optional) ----------
+// Talks to the little Cloudflare Worker in worker/. Entirely opt-in: with no
+// server configured everything above keeps working exactly as before, purely
+// in this browser. The settings live in localStorage rather than in the
+// source, because the repo is public — a passcode committed to it would be a
+// passcode published to the world.
+const SYNC_KEY = "pixel-bead-sync-v1";
+let syncConfig = loadStored(SYNC_KEY, { url: "", passcode: "", profile: "" });
+
+const syncStatusBox = document.getElementById("sync-status");
+const syncUrlInput = document.getElementById("sync-url");
+const syncPassInput = document.getElementById("sync-passcode");
+const syncProfileInput = document.getElementById("sync-profile");
+
+function syncReady() {
+  return !!(syncConfig.url && syncConfig.passcode && syncConfig.profile);
+}
+
+function setSyncStatus(text, kind) {
+  if (!syncStatusBox) return;
+  syncStatusBox.textContent = text || "";
+  syncStatusBox.className = "sync-status" + (kind ? " is-" + kind : "");
+  syncStatusBox.hidden = !text;
+}
+
+async function syncRequest(path, options = {}) {
+  const base = syncConfig.url.replace(/\/+$/, "");
+  const res = await fetch(base + path, {
+    ...options,
+    headers: {
+      Authorization: "Bearer " + syncConfig.passcode,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 保留 null，下面按状态码报错 */ }
+  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  return data;
+}
+
+async function syncPull() {
+  if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
+  setSyncStatus("正在从云端读取…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    inventory = data.inventory || {};
+    saveStored(INVENTORY_KEY, inventory);
+    if (lastPattern) renderUsage(lastPattern);
+    renderInventoryEditor();
+    const when = data.updatedAt ? new Date(data.updatedAt).toLocaleString() : "从未保存";
+    setSyncStatus(`已拉取「${syncConfig.profile}」的库存（云端更新于 ${when}）`, "ok");
+  } catch (err) {
+    setSyncStatus("拉取失败：" + err.message, "error");
+  }
+}
+
+async function syncPush() {
+  if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
+  setSyncStatus("正在上传…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile), {
+      method: "PUT",
+      body: JSON.stringify({ inventory }),
+    });
+    setSyncStatus(`已上传到「${syncConfig.profile}」（${new Date(data.updatedAt).toLocaleString()}）`, "ok");
+  } catch (err) {
+    setSyncStatus("上传失败：" + err.message, "error");
+  }
+}
+
+// KV 免费额度是每天 1000 次写、10 万次读，写比读金贵一百倍。手动改库存时
+// 每敲一个数字就传一次很容易把写额度耗掉，所以合并成一次延迟上传。
+let syncTimer = null;
+function scheduleSyncPush() {
+  if (!syncReady() || !syncConfig.autoPush) return;
+  clearTimeout(syncTimer);
+  setSyncStatus("有改动，稍后自动上传…");
+  syncTimer = setTimeout(syncPush, 2500);
+}
+
+bindIfPresent("sync-save", "click", () => {
+  syncConfig = {
+    url: (syncUrlInput.value || "").trim(),
+    passcode: (syncPassInput.value || "").trim(),
+    profile: (syncProfileInput.value || "").trim(),
+    autoPush: document.getElementById("sync-auto").checked,
+  };
+  saveStored(SYNC_KEY, syncConfig);
+  setSyncStatus(syncReady() ? "已保存同步设置" : "还缺信息：地址、口令、档案名都要填", syncReady() ? "ok" : "error");
+});
+bindIfPresent("sync-pull", "click", syncPull);
+bindIfPresent("sync-push", "click", syncPush);
+
+function restoreSyncForm() {
+  if (!syncUrlInput) return;
+  syncUrlInput.value = syncConfig.url || "";
+  syncPassInput.value = syncConfig.passcode || "";
+  syncProfileInput.value = syncConfig.profile || "";
+  const auto = document.getElementById("sync-auto");
+  if (auto) auto.checked = !!syncConfig.autoPush;
+}
+restoreSyncForm();
 
 bindIfPresent("inventory-import", "change", (evt) => {
   const file = evt.target.files[0];
