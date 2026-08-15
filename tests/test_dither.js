@@ -63,3 +63,38 @@ assert.strictEqual(one[0][0].code, "H7", "70% 黑的格子应判为黑");
 console.log("PASS 覆盖率加权：格内 70% 黑 → 该格判为黑");
 
 console.log("\nALL DITHER TESTS PASSED");
+
+// --- 纹理 / 形体判别 ---
+{
+  const W = 96, H = 96, GW = 12, GH = 12;
+  function img(fn) {
+    const d = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4, v = fn(x, y);
+      d[o] = v; d[o + 1] = v; d[o + 2] = v; d[o + 3] = 255;
+    }
+    return d;
+  }
+  let sd = 7;
+  const rnd = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+  const tm = (data) => run("computeTextureMap")(data, W, H, GW, GH).texture;
+  const mean = (m) => [...m].reduce((a, b) => a + b, 0) / m.length;
+
+  // 平坦：一片纯色
+  const flatT = mean(tm(img(() => 128)));
+  // 边缘：一条干净的斜边 —— 梯度方向高度一致
+  const edgeT = mean(tm(img((x, y) => (x + y < W ? 40 : 210))));
+  // 纹理：各向同性的随机噪点
+  const texT = mean(tm(img(() => 80 + rnd() * 120)));
+
+  console.log(`平坦 ${flatT.toFixed(2)} | 边缘 ${edgeT.toFixed(2)} | 纹理 ${texT.toFixed(2)}`);
+  assert.ok(texT > edgeT * 2, `纹理应明显高于边缘：${texT.toFixed(2)} vs ${edgeT.toFixed(2)}`);
+  assert.ok(texT > flatT * 2, "纹理应明显高于平坦区");
+  console.log("PASS 结构张量：纹理 >> 边缘、平坦区（靠梯度方向一致性区分，而非梯度大小）");
+
+  // 同样强度的梯度，方向一致的判为边、方向杂乱的判为纹理 —— 这才是关键
+  assert.ok(edgeT < 0.5, `干净斜边不该被当成纹理，实际 ${edgeT.toFixed(2)}`);
+  console.log("PASS 干净斜边的梯度很强，但因方向一致而不被判为纹理");
+}
+
+console.log("\nALL DITHER + TEXTURE TESTS PASSED");
