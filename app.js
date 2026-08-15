@@ -948,8 +948,15 @@ function blockModeQuantize(indices, W, H, gridW, gridH, bgMask) {
 // of the 3x3 window (>= `threshold` of 9). That threshold is what protects
 // real detail: a deliberate 2-3 cell feature — an eye, an outline, a
 // highlight — never has 5+ of its neighbours agreeing against it, so it
-// survives, while a 50/50 noise field collapses to whichever color locally
-// dominates.
+// survives, while noise gets pulled toward whatever dominates locally.
+//
+// Worth knowing about the shape of the effect: this CLUMPS noise rather than
+// erasing a color. An exactly balanced two-color field has no local majority
+// to latch onto and barely moves (a perfect checkerboard is a fixed point of
+// any symmetric majority filter). What it reliably does is turn scattered
+// single cells into contiguous patches — and the leftover single cells at
+// the patch edges are then removed by removeSmallRegions. The pair is what
+// gets stray-bead counts to zero; neither does it alone.
 function smoothCellsByMajority(cells, gridW, gridH, passes, threshold) {
   for (let pass = 0; pass < passes; pass++) {
     // Read from a snapshot so every cell in a pass sees the same input;
@@ -1547,6 +1554,16 @@ window.addEventListener("keydown", (evt) => {
   if (cellEditor.hidden) return;
   if (evt.key === "Escape") {
     editorExitBtn.click();
+  } else if (evt.key === "+" || evt.key === "=") {
+    evt.preventDefault();
+    setEditorZoom((editorZoom ?? editorFitZoom()) * 1.25);
+  } else if (evt.key === "-" || evt.key === "_") {
+    evt.preventDefault();
+    setEditorZoom((editorZoom ?? editorFitZoom()) / 1.25);
+  } else if (evt.key === "0") {
+    evt.preventDefault();
+    editorZoom = null;
+    applyEditorZoom();
   } else if ((evt.metaKey || evt.ctrlKey) && evt.key.toLowerCase() === "a") {
     evt.preventDefault();
     editorSelection = new Set();
@@ -1584,11 +1601,74 @@ function renderEditorPatternCanvas() {
   if (!lastPattern) return;
   drawPatternToCanvas(editorPatternCanvas, lastPattern);
   drawSelectionOverlay(editorPatternCanvas, dragSelection());
-  // Zoom in for a "workbench" feel — editing is easier to aim on a bigger
-  // canvas than the compact main preview.
-  const dispScale = Math.min(3, Math.max(1, 640 / editorPatternCanvas.width));
-  editorPatternCanvas.style.width = Math.round(editorPatternCanvas.width * dispScale) + "px";
-  editorPatternCanvas.style.height = Math.round(editorPatternCanvas.height * dispScale) + "px";
+  applyEditorZoom();
+}
+
+// ---------- Editor zoom ----------
+// The editor is where you aim at individual cells, so it needs its own zoom
+// independent of the main preview's. `null` means "fit the panel" and is
+// re-evaluated on every render, so switching board size while the editor is
+// open doesn't leave the canvas at a stale scale; once the user zooms
+// explicitly, that choice sticks until they hit 适应宽度 again.
+const editorPatternWrap = document.getElementById("editor-pattern-wrap");
+const editorZoomInBtn = document.getElementById("editor-zoom-in");
+const editorZoomOutBtn = document.getElementById("editor-zoom-out");
+const editorZoomFitBtn = document.getElementById("editor-zoom-fit");
+const editorZoomLabel = document.getElementById("editor-zoom-label");
+
+let editorZoom = null;
+
+function editorFitZoom() {
+  const avail = (editorPatternWrap && editorPatternWrap.clientWidth) || 640;
+  return clamp((avail - 4) / (editorPatternCanvas.width || 1), 0.1, 8);
+}
+
+function applyEditorZoom() {
+  const z = editorZoom == null ? editorFitZoom() : editorZoom;
+  editorPatternCanvas.style.width = Math.round(editorPatternCanvas.width * z) + "px";
+  editorPatternCanvas.style.height = Math.round(editorPatternCanvas.height * z) + "px";
+  if (editorZoomLabel) editorZoomLabel.textContent = Math.round(z * 100) + "%";
+}
+
+// Zooming around a fixed point (the panel's center, or the cursor for wheel
+// zoom) instead of the top-left corner: at high zoom the area you're working
+// on would otherwise slide out of view on every step, and you'd have to
+// re-find it by scrolling after each click.
+function setEditorZoom(next, anchor) {
+  const wrap = editorPatternWrap;
+  const prev = editorZoom == null ? editorFitZoom() : editorZoom;
+  const z = clamp(next, 0.1, 8);
+  if (!wrap) { editorZoom = z; applyEditorZoom(); return; }
+
+  const ax = anchor ? anchor.x : wrap.clientWidth / 2;
+  const ay = anchor ? anchor.y : wrap.clientHeight / 2;
+  // Content coordinate currently under the anchor point.
+  const cx = (wrap.scrollLeft + ax) / prev;
+  const cy = (wrap.scrollTop + ay) / prev;
+
+  editorZoom = z;
+  applyEditorZoom();
+  wrap.scrollLeft = cx * z - ax;
+  wrap.scrollTop = cy * z - ay;
+}
+
+if (editorZoomInBtn) {
+  editorZoomInBtn.addEventListener("click", () => setEditorZoom((editorZoom ?? editorFitZoom()) * 1.25));
+  editorZoomOutBtn.addEventListener("click", () => setEditorZoom((editorZoom ?? editorFitZoom()) / 1.25));
+  editorZoomFitBtn.addEventListener("click", () => { editorZoom = null; applyEditorZoom(); });
+}
+
+// Ctrl/Cmd+wheel is the near-universal zoom gesture, and claiming it (rather
+// than plain wheel) keeps ordinary scrolling of a tall pattern working.
+if (editorPatternWrap) {
+  editorPatternWrap.addEventListener("wheel", (evt) => {
+    if (!evt.ctrlKey && !evt.metaKey) return;
+    evt.preventDefault();
+    const rect = editorPatternWrap.getBoundingClientRect();
+    const anchor = { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+    const factor = Math.exp(-evt.deltaY * 0.0015);
+    setEditorZoom((editorZoom ?? editorFitZoom()) * factor, anchor);
+  }, { passive: false });
 }
 
 // Every distinct color already placed anywhere in the current pattern —

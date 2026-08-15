@@ -167,6 +167,7 @@
       <div class="kbd-hints">
         <span><kbd>Shift</kbd>+拖拽 累加</span>
         <span><kbd>Shift</kbd>+点击 加减单格</span>
+        <span><kbd>+</kbd><kbd>−</kbd><kbd>0</kbd> 缩放</span>
         <span><kbd>Esc</kbd> 返回</span>
       </div>
     </div>
@@ -178,9 +179,18 @@
         </div>
       </div>
       <div class="card editor-col editor-col-pattern">
-        <div class="card-head"><h3>图纸</h3><span class="hint">拖拽框选要改的格子</span></div>
+        <div class="card-head">
+          <h3>图纸</h3>
+          <div class="zoom-toolbar">
+            <button id="editor-zoom-out" class="btn-icon" title="缩小">−</button>
+            <span id="editor-zoom-label">100%</span>
+            <button id="editor-zoom-in" class="btn-icon" title="放大">+</button>
+            <button id="editor-zoom-fit" class="btn-ghost">适应宽度</button>
+          </div>
+        </div>
+        <p class="hint">拖拽框选要改的格子 · 按住 <kbd>Ctrl</kbd>/<kbd>⌘</kbd> 滚轮可缩放</p>
         <div class="recommend-colors" id="editor-recommend-colors"></div>
-        <div class="pattern-wrap">
+        <div class="pattern-wrap" id="editor-pattern-wrap">
           <canvas id="editor-pattern-canvas"></canvas>
         </div>
       </div>
