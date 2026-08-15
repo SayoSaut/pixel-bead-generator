@@ -126,17 +126,19 @@ console.log("\nALL INVENTORY TESTS PASSED");
 
 // --- 同步配置状态 ---
 {
-  set("syncConfig", { url: "", passcode: "", profile: "" });
+  set("syncConfig", { url: "", passcode: "" });
   assert.strictEqual(run("syncReady")(), false, "缺信息时不应认为已连接");
-  set("syncConfig", { url: "https://x.workers.dev", passcode: "p", profile: "" });
-  assert.strictEqual(run("syncReady")(), false, "少了档案名也不算就绪");
-  set("syncConfig", { url: "https://x.workers.dev", passcode: "p", profile: "小李" });
+  set("syncConfig", { url: "https://x.workers.dev", passcode: "" });
+  assert.strictEqual(run("syncReady")(), false, "少了口令不算就绪");
+  set("syncConfig", { url: "", passcode: "abc123" });
+  assert.strictEqual(run("syncReady")(), false, "少了地址不算就绪");
+  set("syncConfig", { url: "https://x.workers.dev", passcode: "abc123" });
   assert.strictEqual(run("syncReady")(), true);
-  console.log("PASS syncReady：三样齐全才算已连接");
+  console.log("PASS syncReady：地址 + 口令两样齐全即可（身份由服务端判定）");
 
   // 没连服务器时，自动上传不应被触发（否则会报一堆错）
   let called = 0;
-  set("syncConfig", { url: "", passcode: "", profile: "", autoPush: true });
+  set("syncConfig", { url: "", passcode: "", autoPush: true });
   set("syncPush", () => { called++; });
   run("scheduleSyncPush")();
   assert.strictEqual(called, 0, "未配置时不应尝试上传");

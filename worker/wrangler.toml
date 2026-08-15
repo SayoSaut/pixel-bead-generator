@@ -13,5 +13,5 @@ ALLOWED_ORIGIN = "https://sayosaut.github.io"
 binding = "INVENTORY"
 id = "在这里填 KV namespace 的 id"
 
-# 口令不写在这个文件里 —— 这个文件会进公开仓库。
-# 用 `wrangler secret put PASSCODE` 单独设置。
+# 用户名单不写在这个文件里 —— 这个文件会进公开仓库。
+# 用 `wrangler secret put USERS` 单独设置，值是 {"口令":"名字"} 的 JSON。

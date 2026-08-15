@@ -1,5 +1,5 @@
 // Worker：认证、校验、读写、CORS
-import worker, { safeEqual, normalizeProfile, sanitizeInventory } from "../worker/src/index.js";
+import worker, { safeEqual, normalizeProfile, sanitizeInventory, resolveUser } from "../worker/src/index.js";
 import assert from "assert";
 
 // 内存版 KV，够跑完整条请求路径
@@ -14,8 +14,13 @@ function fakeKV() {
   };
 }
 const ORIGIN = "https://sayosaut.github.io";
-const env = () => ({ INVENTORY: fakeKV(), PASSCODE: "hunter2", ALLOWED_ORIGIN: ORIGIN });
-const req = (path, { method = "GET", token = "hunter2", body, origin = ORIGIN } = {}) =>
+// 小李用 KV 名单，小张用 USERS secret —— 两条路都要覆盖
+function env() {
+  const kv = fakeKV();
+  kv._m.set("user:lee-secret-001", "小李");
+  return { INVENTORY: kv, USERS: JSON.stringify({ "zhang-secret-002": "小张" }), ALLOWED_ORIGIN: ORIGIN };
+}
+const req = (path, { method = "GET", token = "lee-secret-001", body, origin = ORIGIN } = {}) =>
   new Request("https://w.example.com" + path, {
     method,
     headers: {
@@ -52,55 +57,64 @@ console.log("PASS sanitizeInventory：只收合法色号与正整数，拒绝畸
 
 // --- 认证 ---
 let e = env();
-let r = await worker.fetch(req("/api/profiles", { token: "" }), e);
+let r = await worker.fetch(req("/api/me", { token: "" }), e);
 assert.strictEqual(r.status, 401);
-r = await worker.fetch(req("/api/profiles", { token: "wrong" }), e);
+r = await worker.fetch(req("/api/me", { token: "not-a-real-code" }), e);
 assert.strictEqual(r.status, 401);
-console.log("PASS 认证：无口令 / 错口令都返回 401");
+console.log("PASS 认证：无口令 / 未登记的口令都返回 401");
 
-r = await worker.fetch(req("/api/profiles"), { ...e, PASSCODE: "" });
-assert.strictEqual(r.status, 401, "没配 PASSCODE 时必须拒绝，不能默认放通");
-console.log("PASS 认证：未配置口令时默认拒绝而非放通");
+r = await worker.fetch(req("/api/me", { token: "short" }), e);
+assert.strictEqual(r.status, 401, "过短的口令应直接拒绝");
+console.log("PASS 认证：口令格式不合规直接拒绝（不去查 KV）");
 
-// --- 读写 ---
+r = await worker.fetch(req("/api/me"), { INVENTORY: null, USERS: "" });
+assert.strictEqual(r.status, 500, "没配名单来源时应报配置错误，而不是含糊的 401");
+console.log("PASS 认证：服务端没配置时报 500 而非误导成「口令不对」");
+
+// --- 身份来自服务端，客户端说了不算 ---
 e = env();
-r = await worker.fetch(req("/api/inventory?profile=小李"), e);
+r = await worker.fetch(req("/api/me"), e);
+assert.deepStrictEqual(await r.json(), { profile: "小李" });
+r = await worker.fetch(req("/api/me", { token: "zhang-secret-002" }), e);
+assert.deepStrictEqual(await r.json(), { profile: "小张" });
+console.log("PASS 身份解析：KV 名单 → 小李，USERS secret → 小张，两条路都通");
+
+// --- 隔离：拿自己的口令读不到别人的数据 ---
+await worker.fetch(req("/api/inventory", { method: "PUT", body: { inventory: { A1: 12 } } }), e);            // 小李
+await worker.fetch(req("/api/inventory", { method: "PUT", token: "zhang-secret-002", body: { inventory: { B2: 99 } } }), e); // 小张
+
+r = await worker.fetch(req("/api/inventory"), e);
+let lee = await r.json();
+assert.deepStrictEqual(lee.inventory, { A1: 12 });
+assert.strictEqual(lee.profile, "小李");
+
+r = await worker.fetch(req("/api/inventory", { token: "zhang-secret-002" }), e);
+let zhang = await r.json();
+assert.deepStrictEqual(zhang.inventory, { B2: 99 });
+console.log("PASS 隔离：两人各读各的，互不串档");
+
+// 关键：URL 上硬塞别人的 profile 也没用，身份只认口令
+r = await worker.fetch(req("/api/inventory?profile=" + encodeURIComponent("小张")), e);
+assert.deepStrictEqual((await r.json()).inventory, { A1: 12 }, "小李带上小张的名字仍应只读到自己的");
+r = await worker.fetch(req("/api/inventory?profile=" + encodeURIComponent("小张"), { method: "PUT", body: { inventory: { A9: 1 } } }), e);
 assert.strictEqual(r.status, 200);
-assert.deepStrictEqual(await r.json(), { inventory: {}, updatedAt: 0 }, "没存过应返回空档案");
+r = await worker.fetch(req("/api/inventory", { token: "zhang-secret-002" }), e);
+assert.deepStrictEqual((await r.json()).inventory, { B2: 99 }, "小李无论如何都不该写进小张的数据");
+console.log("PASS 隔离：URL 里伪造 profile 无效，服务端只认口令");
 
-r = await worker.fetch(req("/api/inventory?profile=小李", { method: "PUT", body: { inventory: { A1: 12, C4: 3 } } }), e);
-assert.strictEqual(r.status, 200);
-const saved = await r.json();
-assert.deepStrictEqual(saved.inventory, { A1: 12, C4: 3 });
-assert.ok(saved.updatedAt > 0, "应写入时间戳");
-
-r = await worker.fetch(req("/api/inventory?profile=小李"), e);
-assert.deepStrictEqual((await r.json()).inventory, { A1: 12, C4: 3 });
-console.log("PASS 读写：写入后能读回，且带 updatedAt");
-
-// 档案互不干扰
-await worker.fetch(req("/api/inventory?profile=小张", { method: "PUT", body: { inventory: { B2: 9 } } }), e);
-r = await worker.fetch(req("/api/inventory?profile=小李"), e);
-assert.deepStrictEqual((await r.json()).inventory, { A1: 12, C4: 3 }, "写小张不能影响小李");
-r = await worker.fetch(req("/api/profiles"), e);
-assert.deepStrictEqual((await r.json()).profiles.sort(), ["小张", "小李"].sort());
-console.log("PASS 多档案：各存各的，profiles 能列出全部");
-
-// 畸形请求
-r = await worker.fetch(req("/api/inventory?profile=小李", { method: "PUT", body: { inventory: { A1: -3 } } }), e);
+// --- 畸形请求 ---
+r = await worker.fetch(req("/api/inventory", { method: "PUT", body: { inventory: { A1: -3 } } }), e);
 assert.strictEqual(r.status, 400);
-r = await worker.fetch(req("/api/inventory?profile=", { method: "GET" }), e);
-assert.strictEqual(r.status, 400);
-r = await worker.fetch(req("/api/inventory?profile=小李"), e);
-assert.deepStrictEqual((await r.json()).inventory, { A1: 12, C4: 3 }, "非法写入不能污染已有数据");
-console.log("PASS 畸形请求返回 400，且不破坏已存数据");
+r = await worker.fetch(req("/api/inventory"), e);
+assert.deepStrictEqual((await r.json()).inventory, { A9: 1 }, "非法写入不能污染已有数据");
+console.log("PASS 畸形请求 400，且不破坏已存数据");
 
-// 删除
-r = await worker.fetch(req("/api/inventory?profile=小张", { method: "DELETE" }), e);
+// --- 删除只删自己的 ---
+r = await worker.fetch(req("/api/inventory", { method: "DELETE" }), e);
 assert.strictEqual(r.status, 200);
-r = await worker.fetch(req("/api/profiles"), e);
-assert.deepStrictEqual((await r.json()).profiles, ["小李"]);
-console.log("PASS 删除档案");
+r = await worker.fetch(req("/api/inventory", { token: "zhang-secret-002" }), e);
+assert.deepStrictEqual((await r.json()).inventory, { B2: 99 }, "小李删自己不应影响小张");
+console.log("PASS 删除只作用于自己的档案");
 
 // --- CORS ---
 r = await worker.fetch(req("/api/profiles", { method: "OPTIONS" }), e);

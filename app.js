@@ -1731,15 +1731,16 @@ bindIfPresent("inventory-export", "click", () => {
 // source, because the repo is public — a passcode committed to it would be a
 // passcode published to the world.
 const SYNC_KEY = "pixel-bead-sync-v1";
-let syncConfig = loadStored(SYNC_KEY, { url: "", passcode: "", profile: "" });
+let syncConfig = loadStored(SYNC_KEY, { url: "", passcode: "" });
+// 服务端根据口令告诉我们"你是谁"，客户端不再自报家门。
+let syncProfile = "";
 
 const syncStatusBox = document.getElementById("sync-status");
 const syncUrlInput = document.getElementById("sync-url");
 const syncPassInput = document.getElementById("sync-passcode");
-const syncProfileInput = document.getElementById("sync-profile");
 
 function syncReady() {
-  return !!(syncConfig.url && syncConfig.passcode && syncConfig.profile);
+  return !!(syncConfig.url && syncConfig.passcode);
 }
 
 function setSyncStatus(text, kind) {
@@ -1769,13 +1770,15 @@ async function syncPull() {
   if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
   setSyncStatus("正在从云端读取…");
   try {
-    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    const data = await syncRequest("/api/inventory");
+    syncProfile = data.profile || "";
     inventory = data.inventory || {};
     saveStored(INVENTORY_KEY, inventory);
     if (lastPattern) renderUsage(lastPattern);
     renderInventoryEditor();
     const when = data.updatedAt ? new Date(data.updatedAt).toLocaleString() : "从未保存";
-    setSyncStatus(`已拉取「${syncConfig.profile}」的库存（云端更新于 ${when}）`, "ok");
+    updateSyncWhere();
+    setSyncStatus(`已拉取「${syncProfile}」的库存（云端更新于 ${when}）`, "ok");
   } catch (err) {
     setSyncStatus("拉取失败：" + err.message, "error");
   }
@@ -1785,11 +1788,12 @@ async function syncPush() {
   if (!syncReady()) return setSyncStatus("请先填好服务器地址、口令和档案名", "error");
   setSyncStatus("正在上传…");
   try {
-    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile), {
+    const data = await syncRequest("/api/inventory", {
       method: "PUT",
       body: JSON.stringify({ inventory }),
     });
-    setSyncStatus(`已上传到「${syncConfig.profile}」（${new Date(data.updatedAt).toLocaleString()}）`, "ok");
+    syncProfile = data.profile || syncProfile;
+    setSyncStatus(`已上传到「${syncProfile}」（${new Date(data.updatedAt).toLocaleString()}）`, "ok");
   } catch (err) {
     setSyncStatus("上传失败：" + err.message, "error");
   }
@@ -1822,7 +1826,8 @@ function updateSyncWhere() {
   try { host = new URL(syncConfig.url).host; } catch (e) { /* 地址还没填对，就照原样显示 */ }
   box.className = "sync-where is-cloud";
   box.innerHTML =
-    `已连接 <strong>${host}</strong> · 档案「<strong>${syncConfig.profile}</strong>」` +
+    `已连接 <strong>${host}</strong>` +
+    (syncProfile ? ` · 你是「<strong>${syncProfile}</strong>」` : " · 尚未验证身份，点「保存并测试连接」") +
     `${syncConfig.autoPush ? " · 改动后自动上传" : " · 需手动点上传"}`;
 }
 
@@ -1834,23 +1839,24 @@ bindIfPresent("sync-save", "click", async () => {
   syncConfig = {
     url: (syncUrlInput.value || "").trim(),
     passcode: (syncPassInput.value || "").trim(),
-    profile: (syncProfileInput.value || "").trim(),
     autoPush: document.getElementById("sync-auto").checked,
   };
   saveStored(SYNC_KEY, syncConfig);
   updateSyncWhere();
   if (!syncReady()) {
-    setSyncStatus("三样都要填：服务器地址、口令、档案名。", "error");
+    setSyncStatus("服务器地址和口令都要填。", "error");
     return;
   }
   setSyncStatus("正在测试连接…");
   try {
-    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    const data = await syncRequest("/api/inventory");
+    syncProfile = data.profile || "";
+    updateSyncWhere();
     const n = Object.keys(data.inventory || {}).length;
     setSyncStatus(
       n
-        ? `连接成功。云端档案「${syncConfig.profile}」已有 ${n} 个色号 —— 点「从云端拉取」取回，或点「上传到云端」用本机数据覆盖它。`
-        : `连接成功。云端档案「${syncConfig.profile}」还是空的 —— 点「上传到云端」把本机库存存上去。`,
+        ? `连接成功，服务器认出你是「${syncProfile}」。云端已有 ${n} 个色号 —— 点「从云端拉取」取回，或点「上传到云端」用本机数据覆盖它。`
+        : `连接成功，服务器认出你是「${syncProfile}」。云端还是空的 —— 点「上传到云端」把本机库存存上去。`,
       "ok"
     );
   } catch (err) {
@@ -1869,7 +1875,6 @@ function restoreSyncForm() {
   if (!syncUrlInput) return;
   syncUrlInput.value = syncConfig.url || "";
   syncPassInput.value = syncConfig.passcode || "";
-  syncProfileInput.value = syncConfig.profile || "";
   const auto = document.getElementById("sync-auto");
   if (auto) auto.checked = !!syncConfig.autoPush;
 }

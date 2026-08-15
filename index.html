@@ -205,17 +205,18 @@
               没有服务器就没有可连的东西 —— 库存会一直只存在这台设备上（那样也完全能用）。
             </p>
             <p class="hint">
-              部署方法在仓库的 <code>worker/README.md</code>：在 Cloudflare 控制台新建一个 Worker，
-              把 <code>worker/src/index.js</code> 粘进去，绑定一个 KV、设好口令，拿到一个
+              部署方法在仓库的 <code>worker/README.md</code>：在 Cloudflare 控制台新建一个 Worker、
+              绑一个 KV、在 KV 里给每个人加一条 <code>user:口令</code> → 名字，拿到一个
               <code>https://xxx.workers.dev</code> 地址。免费额度内不花钱。
             </p>
           </div>
           <div class="sync-form">
             <label>① 服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
-            <label>② 共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
-            <label>③ 你的档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
+            <label>② 你的专属口令<input type="password" id="sync-passcode" placeholder="管理员分给你的那串" /></label>
           </div>
-          <p class="hint">几个人共用一个服务器和口令，各自填不同的档案名，数据就各存各的。</p>
+          <p class="hint">
+            一人一个口令，口令本身就是身份 —— 你只能读写自己的库存，不用也不能填别人的名字。
+          </p>
           <label class="switch sync-auto-row">
             <input type="checkbox" id="sync-auto" />
             <span class="switch-track"><span class="switch-thumb"></span></span>
