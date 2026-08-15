@@ -870,3 +870,18 @@ tbody tr:hover { background: var(--bg); }
 .th-sort.is-active { color: var(--accent); }
 .num .th-sort { flex-direction: row-reverse; }
 .sort-arrow { font-size: 8px; line-height: 1; }
+
+.custom-size { display: flex; align-items: center; gap: 6px; margin: -6px 0 14px; }
+.custom-size label { font-size: 12px; color: var(--ink-2); font-weight: 550; }
+.custom-size input {
+  width: 62px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.custom-size input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.custom-size .hint { margin: 0; }

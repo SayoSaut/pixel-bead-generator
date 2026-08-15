@@ -392,16 +392,128 @@ function clamp(v, lo, hi) {
 
 // ---------- Controls ----------
 
+// 板子尺寸不再限定于 52/78/104 —— 那三个是标准拼豆板的整数倍，但很多人
+// 就是习惯拼 40×40 这样的尺寸，或者手上的板子本来就拼不出整数倍。
+const MIN_BOARD = 16, MAX_BOARD = 160;
+const customSizeInput = document.getElementById("custom-size-input");
+
+function setBoardSize(n) {
+  const size = clamp(Math.round(Number(n) || 0), MIN_BOARD, MAX_BOARD);
+  boardSize = size;
+  [...boardOptions.children].forEach((b) =>
+    b.classList.toggle("active", parseInt(b.dataset.size, 10) === size)
+  );
+  if (customSizeInput) customSizeInput.value = [52, 78, 104].includes(size) ? "" : size;
+  regenerate();
+}
+
 boardOptions.addEventListener("click", (e) => {
   const btn = e.target.closest(".seg-btn");
   if (!btn) return;
-  boardSize = parseInt(btn.dataset.size, 10);
-  [...boardOptions.children].forEach((b) => b.classList.toggle("active", b === btn));
-  regenerate();
+  setBoardSize(btn.dataset.size);
 });
 [...boardOptions.children].forEach((b) => {
   if (parseInt(b.dataset.size, 10) === boardSize) b.classList.add("active");
 });
+
+bindIfPresent("custom-size-apply", "click", () => setBoardSize(customSizeInput.value));
+if (customSizeInput) {
+  customSizeInput.addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter") { evt.preventDefault(); setBoardSize(customSizeInput.value); }
+  });
+}
+
+// ---------- Detail & color compensation ----------
+// Two knobs for the same underlying problem: shrinking an image to a few
+// thousand cells averages away exactly what made it readable.
+//
+// Sharpening (unsharp mask) fights the loss of EDGES. Averaging a 7x7 patch
+// softens every boundary, and once a boundary spans two cells at half
+// strength each, quantization rounds both to the same bead and the edge is
+// gone. Boosting local contrast before the averaging means the edge survives
+// as a real difference between neighbouring cells.
+//
+// Vividness fights the loss of COLOR, and it is not a beautification hack:
+// on broken-brushwork painting (Impressionism especially) the eye optically
+// mixes adjacent strokes into a colour more saturated than their physical
+// average. The maths only ever computes the average, so a Monet sky that
+// reads as blue measures as grey. Raising chroma before matching restores
+// what a viewer actually sees.
+const sharpenSlider = document.getElementById("sharpen-slider");
+const sharpenValue = document.getElementById("sharpen-value");
+const vividSlider = document.getElementById("vivid-slider");
+const vividValue = document.getElementById("vivid-value");
+
+const SHARPEN_STEPS = [
+  { label: "关闭", amount: 0 },
+  { label: "轻微", amount: 0.35 },
+  { label: "适中", amount: 0.7 },
+  { label: "较强", amount: 1.1 },
+  { label: "最强", amount: 1.6 },
+];
+
+function sharpenAmount() {
+  return (SHARPEN_STEPS[parseInt(sharpenSlider.value, 10)] || SHARPEN_STEPS[0]).amount;
+}
+function vividAmount() {
+  return (parseInt(vividSlider.value, 10) || 100) / 100;
+}
+function syncDetailLabels() {
+  sharpenValue.textContent = (SHARPEN_STEPS[parseInt(sharpenSlider.value, 10)] || SHARPEN_STEPS[0]).label;
+  const v = vividAmount();
+  vividValue.textContent = v <= 1.001 ? "原样" : `×${v.toFixed(1)}`;
+}
+syncDetailLabels();
+sharpenSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+vividSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+
+// 就地增强：先做一次 3x3 盒式模糊当作"低频"，再把原图与它的差（高频，也就
+// 是边缘）按 amount 加回去；随后按需拉开彩度。两步都在中间图上做，也就是
+// 量化之前 —— 之后再做就只能加工已经丢失的信息了。
+function enhanceImageData(imageData, sharpen, vivid) {
+  if (sharpen <= 0 && vivid <= 1.001) return imageData;
+  const { width: W, height: H, data } = imageData;
+  const out = new Uint8ClampedArray(data);
+
+  if (sharpen > 0) {
+    const blur = new Float32Array(W * H * 3);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= W) continue;
+            const o = (yy * W + xx) * 4;
+            r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
+          }
+        }
+        const p = (y * W + x) * 3;
+        blur[p] = r / n; blur[p + 1] = g / n; blur[p + 2] = b / n;
+      }
+    }
+    for (let p = 0; p < W * H; p++) {
+      const o = p * 4, q = p * 3;
+      for (let ch = 0; ch < 3; ch++) {
+        out[o + ch] = data[o + ch] + sharpen * (data[o + ch] - blur[q + ch]);
+      }
+    }
+  }
+
+  if (vivid > 1.001) {
+    for (let p = 0; p < W * H; p++) {
+      const o = p * 4;
+      const r = out[o], g = out[o + 1], b = out[o + 2];
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      out[o] = gray + (r - gray) * vivid;
+      out[o + 1] = gray + (g - gray) * vivid;
+      out[o + 2] = gray + (b - gray) * vivid;
+    }
+  }
+  return { width: W, height: H, data: out };
+}
 
 fillSlider.addEventListener("input", () => {
   fillValue.textContent = Math.round(fillSlider.value * 100) + "%";
@@ -456,15 +568,18 @@ async function regenerate() {
   const samplesPerCell = 7;
   const fillRatio = parseFloat(fillSlider.value);
 
-  // The 52 board is small enough that quantizing and cutout-masking
-  // directly at its own resolution starves both of raw samples per cell —
-  // color voting gets noisy and the cutout model/flood-fill sees a much
-  // smaller image, so edges come out jagged. 104 = 2x52 exactly, so instead
-  // we run the whole base pass at 104 and derive 52 by merging each 2x2
-  // block of already-decided cells (see downsampleCellsByHalf below).
-  const sourceBoardSize = boardSize === 52 ? 104 : boardSize;
+  // 小板子直接按自身分辨率量化会让每格可用的原始像素太少 —— 颜色投票变得
+  // 嘈杂，抠图模型/泛洪看到的图也小一圈，边缘因此发毛。所以一律先在 2 倍
+  // 分辨率上跑完整套，再把每个 2×2 已定色的格子合并下来。
+  const SUPERSAMPLE_BELOW = 60;
+  const superSample = boardSize < SUPERSAMPLE_BELOW;
+  const sourceBoardSize = superSample ? boardSize * 2 : boardSize;
   const cap = Math.max(200, sourceBoardSize * samplesPerCell);
-  const imageData = prepareIntermediate(sourceImage, cropRect, allowRect, cap);
+  const imageData = enhanceImageData(
+    prepareIntermediate(sourceImage, cropRect, allowRect, cap),
+    sharpenAmount(),
+    vividAmount()
+  );
   const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, sourceBoardSize, fillRatio);
 
   // Simplification level drives BOTH halves of the cartoonify treatment:
@@ -514,8 +629,9 @@ async function regenerate() {
   }
 
   const sourceCells = blockModeQuantize(indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask);
-  let { gridW, gridH, cells } =
-    boardSize === 52 ? downsampleCellsByHalf(sourceCells, sourceGridW, sourceGridH) : { gridW: sourceGridW, gridH: sourceGridH, cells: sourceCells };
+  let { gridW, gridH, cells } = superSample
+    ? downsampleCellsByHalf(sourceCells, sourceGridW, sourceGridH)
+    : { gridW: sourceGridW, gridH: sourceGridH, cells: sourceCells };
 
   // Both cleanup passes run last, on the grid the user actually gets: the 52
   // board's halving pass creates its own new specks, so cleaning before it
@@ -543,7 +659,10 @@ async function regenerate() {
 
   const { sorted, total } = countBeads(cells);
   renderStats([
-    ["板子", `${boardSize}×${boardSize}`, `${boardSize / BOARD_UNIT}×${boardSize / BOARD_UNIT} 块拼板`],
+    ["板子", `${boardSize}×${boardSize}`,
+      boardSize % BOARD_UNIT === 0
+        ? `${boardSize / BOARD_UNIT}×${boardSize / BOARD_UNIT} 块拼板`
+        : `约 ${(boardSize * 0.5).toFixed(0)}cm 见方`],
     ["图案", `${gridW}×${gridH}`, useCutout ? "已抠图" : "格"],
     ["用色", `${sorted.length}`, "种"],
     ["总豆数", `${total}`, "颗"],
@@ -823,7 +942,17 @@ function buildReducedPalette(imageData, k) {
   const pts = [];
   for (const [key, count] of hist) {
     const r = ((key >> 10) & 31) * 8 + 4, g = ((key >> 5) & 31) * 8 + 4, b = (key & 31) * 8 + 4;
-    pts.push({ lab: rgbToLab(r, g, b), w: count });
+    const lab = rgbToLab(r, g, b);
+    // 权重不是单纯的像素数，而是 sqrt(面积) × 彩度加成。理由是纯按面积
+    // 加权会让"占地最大"的颜色吃掉几乎所有聚类名额：一张画里大片中间调
+    // 的灰绿会分到十几个几乎看不出区别的簇，而面积小但一眼就看见的东西
+    // —— 一把绿伞、一条浅色裙子、一块蓝天 —— 连一个簇都分不到，被并进灰色。
+    //
+    // sqrt 压平面积差距（10000px 的区域只值 100px 区域的 10 倍，而不是 100
+    // 倍），彩度加成再让有颜色的区域优先保住自己的簇。实测在莫奈这类破碎
+    // 笔触的画上，伞和裙子从"消失"变成"能认出来"。
+    const chroma = Math.hypot(lab[1], lab[2]);
+    pts.push({ lab, w: Math.sqrt(count) * (1 + chroma / 12) });
   }
   if (pts.length <= k) return dedupeToMard(pts.map((p) => p.lab));
 
@@ -1336,10 +1465,11 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
     ctx.lineTo(size * CELL_PX, i * CELL_PX);
     ctx.stroke();
   }
-  // seam lines every 26 cells = physical board joins (52/78/104 = 2/3/4 boards)
+  // 拼接缝：每 26 格是一块实体拼豆板的边界。只有当板子尺寸正好是 26 的整数
+  // 倍时才画 —— 自定义尺寸（比如 40）本来就拼不出整数块，画出来只会误导。
   ctx.strokeStyle = "rgba(150,140,120,0.7)";
   ctx.lineWidth = 1.5;
-  for (let i = 0; i <= size; i += BOARD_UNIT) {
+  for (let i = 0; size % BOARD_UNIT === 0 && i <= size; i += BOARD_UNIT) {
     ctx.beginPath();
     ctx.moveTo(i * CELL_PX, 0);
     ctx.lineTo(i * CELL_PX, boardPx);

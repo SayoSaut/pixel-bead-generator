@@ -52,6 +52,12 @@
           <button class="seg-btn" data-size="78">78×78<em>3×3 块</em></button>
           <button class="seg-btn" data-size="104">104×104<em>4×4 块</em></button>
         </div>
+        <div class="custom-size">
+          <label for="custom-size-input">自定义</label>
+          <input type="number" id="custom-size-input" min="16" max="160" step="1" placeholder="40" />
+          <span class="hint">格见方</span>
+          <button id="custom-size-apply" class="btn-ghost">应用</button>
+        </div>
         <label class="slider-label" for="fill-slider">
           画面占板比例
           <output id="fill-value">100%</output>
@@ -76,6 +82,21 @@
           <output id="simplify-value">中等 · 卡通化</output>
         </label>
         <input type="range" id="simplify-slider" min="0" max="4" step="1" value="2" />
+
+        <div class="sub-group">
+          <span class="sub-title">细节与色彩补偿</span>
+          <p class="hint">板子越小、原图笔触越碎，越需要往上调。</p>
+          <label class="slider-label" for="sharpen-slider">
+            细节增强
+            <output id="sharpen-value">适中</output>
+          </label>
+          <input type="range" id="sharpen-slider" min="0" max="4" step="1" value="2" />
+          <label class="slider-label" for="vivid-slider">
+            色彩强度
+            <output id="vivid-value">原样</output>
+          </label>
+          <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
+        </div>
       </div>
 
       <div class="control-group">
