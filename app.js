@@ -1,5 +1,6 @@
 const fileInput = document.getElementById("file-input");
 const resetCropBtn = document.getElementById("reset-crop");
+const cropInfo = document.getElementById("crop-info");
 const boardOptions = document.getElementById("board-options");
 const fillSlider = document.getElementById("fill-slider");
 const fillValue = document.getElementById("fill-value");
@@ -25,20 +26,16 @@ let lastPattern = null;      // { gridW, gridH, cells: [[paletteEntry]] }
 let drag = null;             // { target: 'crop', mode, startOrig:{x,y}, startRect:{...} }
 let zoomLevel = 1;
 let lastZoomedBoardSize = null;
-let recommendedBoard = null;
 
 const patternWrap = document.querySelector(".pattern-wrap");
 const zoomInBtn = document.getElementById("zoom-in");
 const zoomOutBtn = document.getElementById("zoom-out");
 const zoomFitBtn = document.getElementById("zoom-fit");
 const zoomLabel = document.getElementById("zoom-label");
-const recommendBox = document.getElementById("recommend-box");
-const applyRecommendBtn = document.getElementById("apply-recommend");
 const cutoutEnabledCheckbox = document.getElementById("cutout-enabled");
 const cutoutToleranceSlider = document.getElementById("cutout-tolerance");
 const cutoutToleranceValue = document.getElementById("cutout-tolerance-value");
 
-cutoutEnabledCheckbox.addEventListener("change", regenerate);
 // Quadratic ease-in: most of the slider's travel covers the low end, where
 // small differences in tolerance matter most for separating a subject from
 // its background; the last stretch covers a much wider absolute range for
@@ -55,15 +52,29 @@ cutoutToleranceSlider.addEventListener("input", () => {
 
 let cutoutMode = "color"; // "color" | "ml" | "general"
 const cutoutColorControls = document.getElementById("cutout-color-controls");
+const cutoutDetail = document.getElementById("cutout-detail");
 const mlStatusBox = document.getElementById("ml-status");
+
+// The mode buttons and tolerance slider are meaningless while cutout is off,
+// so the whole block stays collapsed until the switch is on.
+cutoutEnabledCheckbox.addEventListener("change", () => {
+  cutoutDetail.hidden = !cutoutEnabledCheckbox.checked;
+  regenerate();
+});
+
+function setMlStatus(text) {
+  mlStatusBox.textContent = text || "";
+  mlStatusBox.hidden = !text;
+}
+
 document.querySelectorAll(".cutout-mode-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     cutoutMode = btn.dataset.mode;
     document.querySelectorAll(".cutout-mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
-    cutoutColorControls.style.display = cutoutMode === "color" ? "" : "none";
-    mlStatusBox.style.display = cutoutMode === "color" ? "none" : "";
-    if (cutoutMode === "ml") mlStatusBox.textContent = "首次使用需从网络加载分割模型（几 MB），之后会缓存";
-    if (cutoutMode === "general") mlStatusBox.textContent = "首次使用需从网络加载通用物体分割模型（约 40MB），之后会缓存";
+    cutoutColorControls.hidden = cutoutMode !== "color";
+    if (cutoutMode === "color") setMlStatus("");
+    if (cutoutMode === "ml") setMlStatus("首次使用需从网络加载分割模型（几 MB），之后会缓存");
+    if (cutoutMode === "general") setMlStatus("首次使用需从网络加载通用物体分割模型（约 40MB），之后会缓存");
     regenerate();
   });
 });
@@ -200,19 +211,27 @@ async function computeGeneralForegroundMask(img, crop, allowRect, dw, dh) {
 
 // ---------- Image loading ----------
 
+const fileNameLabel = document.getElementById("file-name");
+const sourceEmpty = document.getElementById("source-empty");
+
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  fileNameLabel.textContent = file.name;
   const reader = new FileReader();
   reader.onload = (ev) => {
     const img = new Image();
     img.onload = () => {
       sourceImage = img;
+      if (sourceEmpty) sourceEmpty.hidden = true;
       buildSourceFullResCanvas(img);
       sizeSourceCanvas(img);
-      cropRect = autoSmartCrop(img);
+      cropRect = fullImageCrop(img);
       renderSourceWithCrop();
       regenerate();
+    };
+    img.onerror = () => {
+      fileNameLabel.textContent = "这个文件读不出来，换一张试试";
     };
     img.src = ev.target.result;
   };
@@ -221,10 +240,18 @@ fileInput.addEventListener("change", (e) => {
 
 resetCropBtn.addEventListener("click", () => {
   if (!sourceImage) return;
-  cropRect = autoSmartCrop(sourceImage);
+  cropRect = fullImageCrop(sourceImage);
   renderSourceWithCrop();
   regenerate();
 });
+
+// The crop box starts as the whole image and is only ever moved by hand.
+// An earlier version tried to auto-detect the subject and pre-frame it, but a
+// guess that lands even slightly wrong is more annoying to correct than just
+// dragging the box yourself — and when it was right, it was still a surprise.
+function fullImageCrop(img) {
+  return { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+}
 
 // Cached once per uploaded image so the editor's eyedropper can sample an
 // exact pixel without redrawing the (possibly large) source image on every
@@ -247,146 +274,6 @@ function sizeSourceCanvas(img) {
   sourceCanvas.height = Math.round(img.naturalHeight * displayScale);
 }
 
-// Coarse color histogram (5 bits/channel) to find the single most common
-// color in the frame — for card/sticker art this is reliably the background.
-function dominantColor(data, n) {
-  const counts = new Map();
-  for (let p = 0; p < n; p++) {
-    const o = p * 4;
-    const key = ((data[o] >> 3) << 10) | ((data[o + 1] >> 3) << 5) | (data[o + 2] >> 3);
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  let bestKey = 0, bestCount = -1;
-  for (const [k, c] of counts) {
-    if (c > bestCount) { bestCount = c; bestKey = k; }
-  }
-  return [((bestKey >> 10) & 31) * 8 + 4, ((bestKey >> 5) & 31) * 8 + 4, (bestKey & 31) * 8 + 4];
-}
-
-// ---------- Auto smart-crop (color-contrast x edge-energy saliency) ----------
-// Finds the bounding box of the subject so the pattern spends its limited
-// grid on it, not on background. Pure edge-gradient energy alone is fooled
-// by busy decorative backgrounds (marbled card stock, wood grain, etc.) —
-// the texture's own local contrast can out-compete the actual subject. Pure
-// "distance from the dominant color" alone over-includes large flat regions
-// that just happen to differ in color (e.g. solid hair) without being fine
-// detail. Multiplying the two together requires a pixel to be BOTH unlike
-// the background AND locally detailed to score high, which is what actually
-// distinguishes "the subject" from "a patterned background" or "a flat
-// colored region."
-function autoSmartCrop(img) {
-  const aw = 200;
-  const ah = Math.max(1, Math.round((img.naturalHeight / img.naturalWidth) * aw));
-  const canvas = document.createElement("canvas");
-  canvas.width = aw;
-  canvas.height = ah;
-  const ctx = canvas.getContext("2d");
-  // Composite onto white first: transparent PNG pixels read back as (0,0,0)
-  // with alpha 0 in most browsers, which the rest of the pipeline can't
-  // distinguish from real black — without this, transparent corners/margins
-  // (common on card/sticker art) get treated as high-energy "detail" and as
-  // solid black beads later on.
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, aw, ah);
-  ctx.drawImage(img, 0, 0, aw, ah);
-  const data = ctx.getImageData(0, 0, aw, ah).data;
-  const n = aw * ah;
-
-  const dom = dominantColor(data, n);
-  const colorDist = new Float32Array(n);
-  let maxColorDist = 0;
-  for (let p = 0; p < n; p++) {
-    const o = p * 4;
-    const dr = data[o] - dom[0], dg = data[o + 1] - dom[1], db = data[o + 2] - dom[2];
-    const d = Math.sqrt(dr * dr + dg * dg + db * db);
-    colorDist[p] = d;
-    if (d > maxColorDist) maxColorDist = d;
-  }
-
-  const lum = new Float32Array(n);
-  for (let p = 0; p < n; p++) {
-    const o = p * 4;
-    lum[p] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
-  }
-  const edge = new Float32Array(n);
-  let maxEdge = 0;
-  for (let y = 0; y < ah; y++) {
-    for (let x = 0; x < aw; x++) {
-      const xm = Math.max(0, x - 1), xp = Math.min(aw - 1, x + 1);
-      const ym = Math.max(0, y - 1), yp = Math.min(ah - 1, y + 1);
-      const gx = lum[y * aw + xp] - lum[y * aw + xm];
-      const gy = lum[yp * aw + x] - lum[ym * aw + x];
-      const e = Math.sqrt(gx * gx + gy * gy);
-      edge[y * aw + x] = e;
-      if (e > maxEdge) maxEdge = e;
-    }
-  }
-
-  const energy = new Float32Array(n);
-  for (let p = 0; p < n; p++) {
-    energy[p] = (colorDist[p] / (maxColorDist || 1)) * (1 + edge[p] / (maxEdge || 1));
-  }
-
-  // Threshold by cumulative ENERGY MASS, not pixel-area percentile: a fixed
-  // area percentile (e.g. "top 25% of pixels") breaks when the salient
-  // region is small relative to the frame — the threshold degenerates
-  // toward 0 and the "detected" region balloons to the whole image. Walking
-  // pixels in descending energy order until they account for 60% of the
-  // total energy adapts to both small and large salient regions.
-  let total = 0;
-  for (let i = 0; i < aw * ah; i++) total += energy[i];
-  if (total <= 0) return { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-
-  const order = Array.from({ length: aw * ah }, (_, i) => i).sort((a, b) => energy[b] - energy[a]);
-  let cum = 0;
-  const xs = [], ys = [];
-  for (const i of order) {
-    cum += energy[i];
-    xs.push(i % aw);
-    ys.push((i / aw) | 0);
-    if (cum >= total * 0.45) break;
-  }
-  // Bound by the 10th/90th percentile of the selected pixels' coordinates,
-  // not their raw min/max: a bounding box is maximally sensitive to a
-  // handful of outliers (a stray high-contrast fleck in a textured
-  // background, an anti-aliased corner pixel), and those alone can blow the
-  // "tight" box back out to the full frame. Percentiles only respond to
-  // where the bulk of the selected pixels actually sit.
-  xs.sort((a, b) => a - b);
-  ys.sort((a, b) => a - b);
-  const pct = (arr, p) => arr[Math.max(0, Math.min(arr.length - 1, Math.floor(arr.length * p)))];
-  let minX = pct(xs, 0.1), maxX = pct(xs, 0.9);
-  let minY = pct(ys, 0.1), maxY = pct(ys, 0.9);
-
-  // pad the detected region a bit so features aren't cropped flush to the edge
-  const padX = (maxX - minX) * 0.15, padY = (maxY - minY) * 0.15;
-  minX = Math.max(0, minX - padX);
-  maxX = Math.min(aw, maxX + padX);
-  minY = Math.max(0, minY - padY);
-  maxY = Math.min(ah, maxY + padY);
-
-  // don't over-crop: keep at least 30% of each dimension
-  const minW = aw * 0.3, minH = ah * 0.3;
-  if (maxX - minX < minW) {
-    const cx = (minX + maxX) / 2;
-    minX = Math.max(0, cx - minW / 2);
-    maxX = Math.min(aw, cx + minW / 2);
-  }
-  if (maxY - minY < minH) {
-    const cy = (minY + maxY) / 2;
-    minY = Math.max(0, cy - minH / 2);
-    maxY = Math.min(ah, cy + minH / 2);
-  }
-
-  const inv = img.naturalWidth / aw;
-  return {
-    x: Math.round(minX * inv),
-    y: Math.round(minY * inv),
-    w: Math.round((maxX - minX) * inv),
-    h: Math.round((maxY - minY) * inv),
-  };
-}
-
 // ---------- Crop overlay rendering + drag interaction ----------
 
 function renderSourceWithCrop() {
@@ -404,7 +291,11 @@ function renderSourceWithCrop() {
   ctx.fillRect(0, cy, cx, ch); // left
   ctx.fillRect(cx + cw, cy, sourceCanvas.width - cx - cw, ch); // right
 
-  drawRectWithHandles(ctx, cx, cy, cw, ch, "#d9534f");
+  drawRectWithHandles(ctx, cx, cy, cw, ch, "#e8590c");
+  if (cropInfo) {
+    const w = Math.round(cropRect.w), h = Math.round(cropRect.h);
+    cropInfo.textContent = `裁剪 ${w}×${h}px · 比例 ${(w / h).toFixed(2)}:1`;
+  }
 }
 
 function drawRectWithHandles(ctx, x, y, w, h, color) {
@@ -502,7 +393,7 @@ function clamp(v, lo, hi) {
 // ---------- Controls ----------
 
 boardOptions.addEventListener("click", (e) => {
-  const btn = e.target.closest(".board-btn");
+  const btn = e.target.closest(".seg-btn");
   if (!btn) return;
   boardSize = parseInt(btn.dataset.size, 10);
   [...boardOptions.children].forEach((b) => b.classList.toggle("active", b === btn));
@@ -518,6 +409,35 @@ fillSlider.addEventListener("input", () => {
 });
 
 allowRectCheckbox.addEventListener("change", regenerate);
+
+// ---------- Simplification level ----------
+// One slider, because the two knobs behind it are not independently useful:
+// "few colors but keep every speck" and "many colors but no small regions"
+// both look wrong. Level 0 is the old faithful-reproduction behaviour, kept
+// for photos where you genuinely want every shade.
+const simplifySlider = document.getElementById("simplify-slider");
+const simplifyValue = document.getElementById("simplify-value");
+
+const SIMPLIFY_STEPS = [
+  { label: "关闭 · 忠实原图", maxColors: 0,  minRegion: 1, passes: 0, threshold: 9 },
+  { label: "轻度 · 去杂色",   maxColors: 40, minRegion: 2, passes: 1, threshold: 6 },
+  { label: "中等 · 卡通化",   maxColors: 24, minRegion: 3, passes: 2, threshold: 5 },
+  { label: "较强 · 大色块",   maxColors: 16, minRegion: 5, passes: 3, threshold: 5 },
+  { label: "最强 · 极简",     maxColors: 10, minRegion: 9, passes: 4, threshold: 4 },
+];
+
+function simplifySettings() {
+  return SIMPLIFY_STEPS[parseInt(simplifySlider.value, 10)] || SIMPLIFY_STEPS[0];
+}
+
+function syncSimplifyLabel() {
+  simplifyValue.textContent = simplifySettings().label;
+}
+syncSimplifyLabel();
+simplifySlider.addEventListener("input", () => {
+  syncSimplifyLabel();
+  regenerate();
+});
 
 // ---------- Core pipeline ----------
 
@@ -547,7 +467,16 @@ async function regenerate() {
   const imageData = prepareIntermediate(sourceImage, cropRect, allowRect, cap);
   const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, sourceBoardSize, fillRatio);
 
-  const rawIndices = quantizeIndices(imageData);
+  // Simplification level drives BOTH halves of the cartoonify treatment:
+  // how many colors the picture may use at all, and how big a patch has to
+  // be to survive. They have to move together — cutting colors alone still
+  // leaves ragged one-cell borders where two regions meet, and cleaning
+  // regions alone can't stop a gradient from being tiled with a dozen
+  // near-identical blues in the first place.
+  const { maxColors, minRegion, passes, threshold } = simplifySettings();
+  const allowedPalette = maxColors ? buildReducedPalette(imageData, maxColors) : null;
+
+  const rawIndices = quantizeIndices(imageData, allowedPalette);
   const indices = despeckleIndices(rawIndices, imageData.width, imageData.height);
 
   // Cutout has two independent mechanisms behind the same on/off switch:
@@ -561,35 +490,44 @@ async function regenerate() {
   if (useCutout && cutoutMode === "color") {
     bgMask = computeBackgroundMask(imageData, toleranceFromSlider(parseFloat(cutoutToleranceSlider.value)));
   } else if (useCutout && cutoutMode === "ml") {
-    mlStatusBox.textContent = "正在运行 ML 分割…";
-    mlStatusBox.style.display = "";
+    setMlStatus("正在运行 ML 分割…");
     try {
       bgMask = await computeMlForegroundMask(sourceImage, cropRect, allowRect, imageData.width, imageData.height);
       if (myToken !== regenerateToken) return; // a newer regenerate() superseded this one
-      mlStatusBox.textContent = "ML 人像分割完成";
+      setMlStatus("ML 人像分割完成");
     } catch (err) {
       if (myToken !== regenerateToken) return;
-      mlStatusBox.textContent = "ML 模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）";
+      setMlStatus("ML 模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）");
       bgMask = null;
     }
   } else if (useCutout && cutoutMode === "general") {
-    mlStatusBox.textContent = "正在运行通用物体分割（首次需下载模型，约 40MB）…";
-    mlStatusBox.style.display = "";
+    setMlStatus("正在运行通用物体分割（首次需下载模型，约 40MB）…");
     try {
       bgMask = await computeGeneralForegroundMask(sourceImage, cropRect, allowRect, imageData.width, imageData.height);
       if (myToken !== regenerateToken) return; // a newer regenerate() superseded this one
-      mlStatusBox.textContent = "通用物体分割完成";
+      setMlStatus("通用物体分割完成");
     } catch (err) {
       if (myToken !== regenerateToken) return;
-      mlStatusBox.textContent = "通用物体分割模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）";
+      setMlStatus("通用物体分割模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）");
       bgMask = null;
     }
   }
 
   const sourceCells = blockModeQuantize(indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask);
-  const { gridW, gridH, cells } =
+  let { gridW, gridH, cells } =
     boardSize === 52 ? downsampleCellsByHalf(sourceCells, sourceGridW, sourceGridH) : { gridW: sourceGridW, gridH: sourceGridH, cells: sourceCells };
 
+  // Both cleanup passes run last, on the grid the user actually gets: the 52
+  // board's halving pass creates its own new specks, so cleaning before it
+  // would leave them behind. Smoothing goes first — it turns noise fields
+  // into solid areas, and whatever single beads it leaves at the edges are
+  // exactly what removeSmallRegions is for.
+  cells = smoothCellsByMajority(cells, gridW, gridH, passes, threshold);
+  cells = removeSmallRegions(cells, gridW, gridH, minRegion);
+
+  // The grid may have changed shape, so cell coordinates held over from a
+  // previous selection no longer point at the same beads.
+  editorSelection = new Set();
   lastPattern = { gridW, gridH, cells };
   renderPattern(lastPattern);
   renderUsage(lastPattern);
@@ -599,23 +537,32 @@ async function regenerate() {
     setZoom((patternWrap.clientWidth - 4) / patternCanvas.width);
   }
 
-  const offsetX = Math.floor((boardSize - gridW) / 2);
-  const offsetY = Math.floor((boardSize - gridH) / 2);
-  let total = 0;
-  for (const row of cells) for (const cell of row) if (cell) total++;
-  const cutoutNote = useCutout ? " | 已抠图" : "";
-  resultInfo.textContent =
-    `板子: ${boardSize}×${boardSize}（${boardSize / BOARD_UNIT}×${boardSize / BOARD_UNIT}块） | 图案: ${gridW}×${gridH}（留边 约${offsetX}/${offsetY}格） | 总豆数: ${total}${cutoutNote}`;
+  const { sorted, total } = countBeads(cells);
+  renderStats([
+    ["板子", `${boardSize}×${boardSize}`, `${boardSize / BOARD_UNIT}×${boardSize / BOARD_UNIT} 块拼板`],
+    ["图案", `${gridW}×${gridH}`, useCutout ? "已抠图" : "格"],
+    ["用色", `${sorted.length}`, "种"],
+    ["总豆数", `${total}`, "颗"],
+  ]);
 
   exportPngBtn.disabled = false;
   exportCsvBtn.disabled = false;
 
-  // Any manual per-cell edits made in the editor before this regenerate()
-  // ran are gone now — this rebuilds `cells` from scratch from the current
-  // crop/board/cutout settings, with no memory of prior overrides. That's
-  // intentional: the editor is a final polish step, meant to run after
-  // upstream settings are already dialed in.
-  updateRecommendation();
+  // Note: any manual per-cell edits made in the editor before this
+  // regenerate() ran are gone now — this rebuilds `cells` from scratch from
+  // the current crop/board/cutout settings, with no memory of prior
+  // overrides. That's intentional: the editor is a final polish step, meant
+  // to run after upstream settings are already dialed in.
+}
+
+function renderStats(rows) {
+  resultInfo.innerHTML = rows
+    .map(([label, value, unit]) =>
+      `<div class="stat"><span class="stat-label">${label}</span>` +
+      `<span class="stat-value">${value}</span>` +
+      `<span class="stat-unit">${unit}</span></div>`
+    )
+    .join("");
 }
 
 // ---------- Cutout (background removal) ----------
@@ -678,112 +625,6 @@ zoomInBtn.addEventListener("click", () => setZoom(zoomLevel * 1.25));
 zoomOutBtn.addEventListener("click", () => setZoom(zoomLevel / 1.25));
 zoomFitBtn.addEventListener("click", () => setZoom((patternWrap.clientWidth - 4) / patternCanvas.width));
 
-// ---------- Board/crop recommendation ----------
-// Estimates how fine the busiest recurring detail in the crop is (e.g. the
-// stroke width of small features like eyes or thin lines) and recommends
-// the smallest board that gives that detail at least ~3 cells across —
-// enough to survive quantization as a recognizable, separate color patch.
-
-function updateRecommendation() {
-  const rec = analyzeDetail(sourceImage, cropRect);
-  recommendedBoard = rec.recommendedBoard;
-  const note = rec.note ? `（${rec.note}）` : "";
-  recommendBox.textContent = `推荐: ${rec.recommendedBoard}×${rec.recommendedBoard} · 100% 填充${note}`;
-}
-
-applyRecommendBtn.addEventListener("click", () => {
-  if (recommendedBoard == null) return;
-  boardSize = recommendedBoard;
-  [...boardOptions.children].forEach((b) =>
-    b.classList.toggle("active", parseInt(b.dataset.size, 10) === boardSize)
-  );
-  fillSlider.value = 1;
-  fillValue.textContent = "100%";
-  regenerate();
-});
-
-function analyzeDetail(img, crop) {
-  const aw = 160;
-  const ah = Math.max(1, Math.round((crop.h / crop.w) * aw));
-  const canvas = document.createElement("canvas");
-  canvas.width = aw;
-  canvas.height = ah;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, aw, ah);
-  ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, aw, ah);
-  const data = ctx.getImageData(0, 0, aw, ah).data;
-
-  const lum = new Float32Array(aw * ah);
-  for (let p = 0; p < aw * ah; p++) {
-    const o = p * 4;
-    lum[p] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
-  }
-  const energy = new Float32Array(aw * ah);
-  for (let y = 0; y < ah; y++) {
-    for (let x = 0; x < aw; x++) {
-      const xm = Math.max(0, x - 1), xp = Math.min(aw - 1, x + 1);
-      const ym = Math.max(0, y - 1), yp = Math.min(ah - 1, y + 1);
-      const gx = lum[y * aw + xp] - lum[y * aw + xm];
-      const gy = lum[yp * aw + x] - lum[ym * aw + x];
-      energy[y * aw + x] = Math.sqrt(gx * gx + gy * gy);
-    }
-  }
-
-  // Threshold by mean + 2*stddev, NOT a fixed percentile: percentiles break
-  // the same way autoSmartCrop's did — when the salient region is a small
-  // fraction of the frame (e.g. small eyes), even the 90th-percentile energy
-  // value can be ~0, so every flat-background pixel would also pass and the
-  // flood fill below would swallow the whole image into one "feature".
-  // mean+2*std adapts to how sparse the real detail is instead of assuming
-  // a fixed area fraction.
-  let sum = 0;
-  for (let i = 0; i < aw * ah; i++) sum += energy[i];
-  const mean = sum / (aw * ah);
-  let variance = 0;
-  for (let i = 0; i < aw * ah; i++) variance += (energy[i] - mean) * (energy[i] - mean);
-  const threshold = mean + 2 * Math.sqrt(variance / (aw * ah));
-
-  // connected components of high-energy pixels; the smallest bounding
-  // dimension of each blob is a proxy for how "thin" that piece of detail is
-  const visited = new Uint8Array(aw * ah);
-  const stack = [];
-  const featureSizes = [];
-  for (let start = 0; start < aw * ah; start++) {
-    if (visited[start] || energy[start] <= threshold) continue;
-    let minX = aw, maxX = 0, minY = ah, maxY = 0, count = 0;
-    stack.length = 0;
-    stack.push(start);
-    visited[start] = 1;
-    while (stack.length) {
-      const i = stack.pop();
-      const x = i % aw, y = (i / aw) | 0;
-      count++;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (x > 0 && !visited[i - 1] && energy[i - 1] > threshold) { visited[i - 1] = 1; stack.push(i - 1); }
-      if (x < aw - 1 && !visited[i + 1] && energy[i + 1] > threshold) { visited[i + 1] = 1; stack.push(i + 1); }
-      if (y > 0 && !visited[i - aw] && energy[i - aw] > threshold) { visited[i - aw] = 1; stack.push(i - aw); }
-      if (y < ah - 1 && !visited[i + aw] && energy[i + aw] > threshold) { visited[i + aw] = 1; stack.push(i + aw); }
-    }
-    if (count >= 3) featureSizes.push(Math.min(maxX - minX + 1, maxY - minY + 1));
-  }
-
-  const candidates = [52, 78, 104];
-  if (featureSizes.length === 0) {
-    return { recommendedBoard: 52, note: "画面细节较少，小板足够" };
-  }
-
-  featureSizes.sort((a, b) => a - b);
-  const median = featureSizes[Math.floor(featureSizes.length / 2)];
-  const requiredGrid = Math.ceil(3 / (median / aw));
-  const recommendedBoard = candidates.find((c) => c >= requiredGrid) || 104;
-  const note = requiredGrid > 104 ? "细节非常密集，104 也可能不够清晰" : "";
-  return { recommendedBoard, note };
-}
-
 // Crop (+ optional center-square crop) then downscale to an EXACT target
 // resolution, with NO smoothing so the sampled pixels stay crisp —
 // smoothing here would pre-blend fine detail (like eyes) away before we
@@ -801,8 +642,9 @@ function sampleRegion(img, crop, allowRect, dw, dh) {
   canvas.width = dw;
   canvas.height = dh;
   const ctx = canvas.getContext("2d");
-  // Same transparent-pixel-reads-as-black issue as autoSmartCrop — composite
-  // onto white before sampling.
+  // Transparent PNG pixels read back as (0,0,0) with alpha 0 in most
+  // browsers, which the rest of the pipeline can't distinguish from real
+  // black — composite onto white before sampling.
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, dw, dh);
   ctx.imageSmoothingEnabled = false;
@@ -886,7 +728,14 @@ function computeGrid(srcW, srcH, boardSize, fillRatio) {
 // blends real colors into a fake intermediate one that can snap to a wrong,
 // unrelated palette entry (this is what produced the muddy/blurred results
 // and stray near-black cells at high-contrast edges).
-function quantizeIndices(imageData) {
+//
+// `allowed` optionally restricts matching to a subset of MARD_PALETTE (see
+// buildReducedPalette). That restriction is the single most effective lever
+// against a speckled result: with all 221 colors available, a smooth sky
+// gradient snaps to a dozen near-identical blues that alternate cell by
+// cell, which reads as noise on the board even though each individual match
+// is "correct".
+function quantizeIndices(imageData, allowed = null) {
   const { width: W, height: H, data } = imageData;
   const cache = new Map();
   const indices = new Int16Array(W * H);
@@ -896,12 +745,118 @@ function quantizeIndices(imageData) {
     const key = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
     let idx = cache.get(key);
     if (idx === undefined) {
-      idx = nearestMardColor(r, g, b).index;
+      idx = allowed ? nearestInPalette(r, g, b, allowed).index : nearestMardColor(r, g, b).index;
       cache.set(key, idx);
     }
     indices[p] = idx;
   }
   return indices;
+}
+
+function nearestInPalette(r, g, b, allowed) {
+  const target = rgbToLab(r, g, b);
+  let best = allowed[0], bestDist = Infinity;
+  for (const entry of allowed) {
+    const d = labDistance(target, entry.lab);
+    if (d < bestDist) { bestDist = d; best = entry; }
+  }
+  return best;
+}
+
+// ---------- Cartoonify: pick a small global palette (k-means in Lab) -------
+// Instead of letting every pixel independently choose from all 221 colors,
+// this decides up front which ~K colors the whole picture gets to use, then
+// forces every pixel into that set. Large smooth areas (sky, water, a flat
+// wall) collapse onto ONE color instead of being tiled with many barely
+// distinguishable neighbors, which is what makes the result read as a
+// deliberate simplified illustration rather than a blurry copy.
+//
+// Clustering runs in Lab (not RGB) so "which colors are similar enough to
+// merge" matches what the eye says, and it's weighted by pixel count so a
+// color that covers half the image can't be outvoted by a handful of
+// saturated specks.
+function buildReducedPalette(imageData, k) {
+  const { width: W, height: H, data } = imageData;
+
+  // Collapse to a coarse histogram first: k-means over ~1e5 raw pixels is
+  // needlessly slow when only a few thousand distinct colors exist, and the
+  // weights make the clustering better-behaved too.
+  const hist = new Map();
+  for (let p = 0; p < W * H; p++) {
+    const o = p * 4;
+    const key = ((data[o] >> 3) << 10) | ((data[o + 1] >> 3) << 5) | (data[o + 2] >> 3);
+    hist.set(key, (hist.get(key) || 0) + 1);
+  }
+  const pts = [];
+  for (const [key, count] of hist) {
+    const r = ((key >> 10) & 31) * 8 + 4, g = ((key >> 5) & 31) * 8 + 4, b = (key & 31) * 8 + 4;
+    pts.push({ lab: rgbToLab(r, g, b), w: count });
+  }
+  if (pts.length <= k) return dedupeToMard(pts.map((p) => p.lab));
+
+  // k-means++ seeding: plain random seeding regularly drops every seed into
+  // the one dominant color, and the small-but-important regions (eyes, a
+  // logo, a highlight) then get no cluster of their own at all.
+  const centers = [pts[0].lab];
+  const d2 = new Float64Array(pts.length).fill(Infinity);
+  while (centers.length < k) {
+    let total = 0;
+    const last = centers[centers.length - 1];
+    for (let i = 0; i < pts.length; i++) {
+      const d = labDistance(pts[i].lab, last);
+      if (d < d2[i]) d2[i] = d;
+      total += d2[i] * pts[i].w;
+    }
+    if (total <= 0) break;
+    let target = Math.random() * total, pick = pts.length - 1;
+    for (let i = 0; i < pts.length; i++) {
+      target -= d2[i] * pts[i].w;
+      if (target <= 0) { pick = i; break; }
+    }
+    centers.push(pts[pick].lab);
+  }
+
+  for (let iter = 0; iter < 12; iter++) {
+    const sums = centers.map(() => [0, 0, 0, 0]);
+    for (const pt of pts) {
+      let best = 0, bestD = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const d = labDistance(pt.lab, centers[c]);
+        if (d < bestD) { bestD = d; best = c; }
+      }
+      const s = sums[best];
+      s[0] += pt.lab[0] * pt.w;
+      s[1] += pt.lab[1] * pt.w;
+      s[2] += pt.lab[2] * pt.w;
+      s[3] += pt.w;
+    }
+    let moved = 0;
+    for (let c = 0; c < centers.length; c++) {
+      if (!sums[c][3]) continue;
+      const next = [sums[c][0] / sums[c][3], sums[c][1] / sums[c][3], sums[c][2] / sums[c][3]];
+      moved += labDistance(next, centers[c]);
+      centers[c] = next;
+    }
+    if (moved < 0.5) break; // converged
+  }
+
+  return dedupeToMard(centers);
+}
+
+// Snap each cluster center to a real bead color. Several centers can land on
+// the same bead, which is fine and even desirable — it means the picture
+// genuinely needed fewer colors than requested.
+function dedupeToMard(labs) {
+  const seen = new Map();
+  for (const lab of labs) {
+    let best = MARD_PALETTE[0], bestD = Infinity;
+    for (const entry of MARD_PALETTE) {
+      const d = labDistance(lab, entry.lab);
+      if (d < bestD) { bestD = d; best = entry; }
+    }
+    seen.set(best.index, best);
+  }
+  return [...seen.values()];
 }
 
 // Each target cell = the MODE (most frequent) palette color among the source
@@ -952,6 +907,130 @@ function blockModeQuantize(indices, W, H, gridW, gridH, bgMask) {
     result.push(row);
   }
   return result;
+}
+
+// ---------- Cell-level majority smoothing (removes checkerboard noise) ----
+// Limiting the palette fixes gradients that used a dozen colors, but not the
+// other failure mode: where the true color sits exactly between two allowed
+// beads, adjacent cells alternate between them and the area comes out
+// looking dithered. Those alternating cells form ONE large connected region
+// each, so removeSmallRegions can't touch them — the fix has to be spatial.
+//
+// A cell only flips when a single neighbouring color holds a clear majority
+// of the 3x3 window (>= `threshold` of 9). That threshold is what protects
+// real detail: a deliberate 2-3 cell feature — an eye, an outline, a
+// highlight — never has 5+ of its neighbours agreeing against it, so it
+// survives, while a 50/50 noise field collapses to whichever color locally
+// dominates.
+function smoothCellsByMajority(cells, gridW, gridH, passes, threshold) {
+  for (let pass = 0; pass < passes; pass++) {
+    // Read from a snapshot so every cell in a pass sees the same input;
+    // updating in place would let a decision propagate across the row within
+    // one pass and smear features sideways.
+    const prev = cells.map((row) => row.slice());
+    let changed = 0;
+    for (let gy = 0; gy < gridH; gy++) {
+      for (let gx = 0; gx < gridW; gx++) {
+        const cur = prev[gy][gx];
+        if (!cur) continue; // never fill cutout holes
+        const votes = new Map();
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const y = gy + dy, x = gx + dx;
+            if (y < 0 || y >= gridH || x < 0 || x >= gridW) continue;
+            const c = prev[y][x];
+            if (!c) continue;
+            votes.set(c.index, (votes.get(c.index) || 0) + 1);
+          }
+        }
+        let bestIdx = -1, bestCount = -1;
+        for (const [idx, count] of votes) {
+          if (count > bestCount) { bestCount = count; bestIdx = idx; }
+        }
+        if (bestIdx !== -1 && bestIdx !== cur.index && bestCount >= threshold) {
+          cells[gy][gx] = MARD_PALETTE[bestIdx];
+          changed++;
+        }
+      }
+    }
+    if (!changed) break; // stable; further passes can't do anything
+  }
+  return cells;
+}
+
+// ---------- Cell-level region cleanup (removes stray single beads) --------
+// Runs on the FINAL cell grid, which is the only place a "stray bead" is
+// even definable — the earlier despeckleIndices pass works on source pixels,
+// where a 1px speck may still be a legitimate part of a feature that several
+// cells will cover. Here, a colored island smaller than `minRegion` cells is
+// a bead you'd have to hunt for in the bag, place, and then not be able to
+// see in the finished piece; absorbing it into whichever color surrounds it
+// costs nothing visually and removes a color from the shopping list.
+//
+// Background (null) regions are deliberately left alone: a hole in the
+// cutout is a real design decision, not noise.
+function removeSmallRegions(cells, gridW, gridH, minRegion) {
+  if (minRegion <= 1) return cells;
+  const idAt = new Int32Array(gridW * gridH).fill(-1);
+  const regions = [];
+
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const p = gy * gridW + gx;
+      if (idAt[p] !== -1 || !cells[gy][gx]) continue;
+      const code = cells[gy][gx].index;
+      const id = regions.length;
+      const members = [];
+      const stack = [p];
+      idAt[p] = id;
+      while (stack.length) {
+        const q = stack.pop();
+        members.push(q);
+        const x = q % gridW, y = (q / gridW) | 0;
+        const push = (nx, ny) => {
+          if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) return;
+          const np = ny * gridW + nx;
+          if (idAt[np] !== -1) return;
+          const c = cells[ny][nx];
+          if (!c || c.index !== code) return;
+          idAt[np] = id;
+          stack.push(np);
+        };
+        push(x - 1, y); push(x + 1, y); push(x, y - 1); push(x, y + 1);
+      }
+      regions.push({ members, code });
+    }
+  }
+
+  // Smallest regions first: dissolving those lets a slightly larger neighbor
+  // grow, so a cluster of specks collapses into one color instead of each
+  // speck independently picking a different survivor.
+  regions.sort((a, b) => a.members.length - b.members.length);
+
+  for (const region of regions) {
+    if (region.members.length >= minRegion) continue;
+    const votes = new Map();
+    for (const p of region.members) {
+      const x = p % gridW, y = (p / gridW) | 0;
+      for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+        if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
+        const c = cells[ny][nx];
+        if (!c || c.index === region.code) continue;
+        votes.set(c.index, (votes.get(c.index) || 0) + 1);
+      }
+    }
+    if (!votes.size) continue; // fully enclosed by background — leave it
+    let bestIdx = -1, bestCount = -1;
+    for (const [idx, count] of votes) {
+      if (count > bestCount) { bestCount = count; bestIdx = idx; }
+    }
+    const replacement = MARD_PALETTE[bestIdx];
+    for (const p of region.members) {
+      cells[(p / gridW) | 0][p % gridW] = replacement;
+    }
+    region.code = bestIdx;
+  }
+  return cells;
 }
 
 // Merges each non-overlapping 2x2 block of an already-quantized cell grid
@@ -1031,20 +1110,80 @@ function countBeads(cells) {
 // selection outline. `withLegend` appends the color/count list underneath;
 // the editor leaves it off so the workbench canvas stays compact and the
 // legend can't be mistaken for editable cells.
+// ---------- Guide lines every 10 cells, with row/column numbers ----------
+// The decade lines are centered on the board rather than started from the
+// left edge, so the leftover cells split evenly as a margin on both sides:
+// 52 = 1 + 5x10 + 1, 78 = 4 + 7x10 + 4, 104 = 2 + 10x10 + 2. Counting from
+// either edge then lands on the same lines, which is what you want when
+// you're placing beads from whichever corner you started at.
+const GUTTER_PX = 30; // room for the row/column numbers along the top and left
+
+function guideMargin(size) {
+  return (size - Math.floor(size / 10) * 10) / 2;
+}
+
+function drawGuides(ctx, size, gutter) {
+  const boardPx = size * CELL_PX;
+  const margin = guideMargin(size);
+
+  ctx.strokeStyle = "rgba(30,30,40,0.55)";
+  ctx.lineWidth = 2;
+  const lines = [];
+  for (let i = margin; i <= size - margin + 0.001; i += 10) lines.push(Math.round(i));
+  for (const i of lines) {
+    ctx.beginPath();
+    ctx.moveTo(gutter + i * CELL_PX, gutter);
+    ctx.lineTo(gutter + i * CELL_PX, gutter + boardPx);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(gutter, gutter + i * CELL_PX);
+    ctx.lineTo(gutter + boardPx, gutter + i * CELL_PX);
+    ctx.stroke();
+  }
+
+  // Numbers label CELLS, not lines, and run 1..size across the whole board
+  // (the margin columns included) so they match the physical pegboard when
+  // you count holes.
+  ctx.fillStyle = "#5a5a66";
+  ctx.font = `600 ${Math.round(CELL_PX * 0.46)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const marks = new Set([1, size]);
+  for (let n = 10; n <= size; n += 10) marks.add(n);
+  for (const n of marks) {
+    const center = gutter + (n - 0.5) * CELL_PX;
+    ctx.fillText(String(n), center, gutter / 2);
+    ctx.save();
+    ctx.translate(gutter / 2, center);
+    ctx.fillText(String(n), 0, 0);
+    ctx.restore();
+  }
+}
+
 function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false) {
   const size = boardSize;
+  const gutter = GUTTER_PX;
+  const boardPx = size * CELL_PX;
   const legend = withLegend ? countBeads(cells) : null;
-  const legendH = legend ? legendHeight(legend.sorted.length, size * CELL_PX) : 0;
-  canvas.width = size * CELL_PX;
-  canvas.height = size * CELL_PX + legendH;
+  const legendH = legend ? legendHeight(legend.sorted.length, boardPx + gutter) : 0;
+  canvas.width = boardPx + gutter;
+  canvas.height = boardPx + gutter + legendH;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // The gutter holding the row/column numbers sits outside the board, so
+  // everything board-related is drawn translated by it. Legend drawing
+  // restores the identity transform first (see below).
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, boardPx + gutter);
+  ctx.save();
+  ctx.translate(gutter, gutter);
+
   // empty board background (unused peg holes). Bounded to the board's own
-  // height, not the whole canvas — the legend strip below paints its own
-  // background and must not be covered by this.
+  // size, not the whole canvas — the gutter and the legend strip below paint
+  // their own backgrounds and must not be covered by this.
   ctx.fillStyle = "#f0ede7";
-  ctx.fillRect(0, 0, canvas.width, size * CELL_PX);
+  ctx.fillRect(0, 0, boardPx, boardPx);
   ctx.fillStyle = "#c9c2b4";
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -1090,20 +1229,23 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
     ctx.stroke();
   }
   // seam lines every 26 cells = physical board joins (52/78/104 = 2/3/4 boards)
-  ctx.strokeStyle = "rgba(90,90,90,0.55)";
+  ctx.strokeStyle = "rgba(150,140,120,0.7)";
   ctx.lineWidth = 1.5;
   for (let i = 0; i <= size; i += BOARD_UNIT) {
     ctx.beginPath();
     ctx.moveTo(i * CELL_PX, 0);
-    ctx.lineTo(i * CELL_PX, size * CELL_PX);
+    ctx.lineTo(i * CELL_PX, boardPx);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(0, i * CELL_PX);
-    ctx.lineTo(size * CELL_PX, i * CELL_PX);
+    ctx.lineTo(boardPx, i * CELL_PX);
     ctx.stroke();
   }
 
-  if (legend) drawLegend(ctx, legend, size * CELL_PX, canvas.width);
+  ctx.restore(); // back to canvas coords; guides draw their own gutter offset
+  drawGuides(ctx, size, gutter);
+
+  if (legend) drawLegend(ctx, legend, boardPx + gutter, canvas.width);
 }
 
 // ---------- Bead-count legend (drawn under the board) ----------
@@ -1205,61 +1347,159 @@ const editorPatternCanvas = document.getElementById("editor-pattern-canvas");
 const editorRecommendColors = document.getElementById("editor-recommend-colors");
 const editorSelectionInfo = document.getElementById("editor-selection-info");
 
-let editorSelection = null; // {gx0, gy0, gx1, gy1} in FINAL grid coords, gx1/gy1 exclusive
+// The selection is a SET of individual cells, not a rectangle. A rectangle
+// is the wrong shape for the actual job here: the cells that came out wrong
+// are usually an outline, a curve, or a few scattered specks, and forcing
+// them into one box means either editing in many passes or catching
+// neighbors you didn't want to touch. A set lets Shift build up any shape.
+let editorSelection = new Set(); // keys "gx,gy" in FINAL grid coords
 let editorSourceScale = 1;
+
+const cellKey = (gx, gy) => `${gx},${gy}`;
+
+function selectionBounds(sel) {
+  if (!sel.size) return null;
+  let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
+  for (const k of sel) {
+    const [gx, gy] = k.split(",").map(Number);
+    if (gx < gx0) gx0 = gx;
+    if (gy < gy0) gy0 = gy;
+    if (gx > gx1) gx1 = gx;
+    if (gy > gy1) gy1 = gy;
+  }
+  return { gx0, gy0, gx1: gx1 + 1, gy1: gy1 + 1 };
+}
 
 // Converts a click on either pattern canvas (main preview or the editor's
 // own) into a grid cell, accounting for the CSS zoom/display scale each one
-// is currently rendered at.
-function patternCellFromEvent(evt, canvasEl) {
+// is currently rendered at. `clamp` keeps a drag that runs off the edge of
+// the board selecting up to the edge instead of snapping back to the anchor.
+function patternCellFromEvent(evt, canvasEl, clampToGrid = false) {
   if (!lastPattern) return null;
   const rect = canvasEl.getBoundingClientRect();
-  const px = ((evt.clientX - rect.left) * canvasEl.width) / rect.width;
-  const py = ((evt.clientY - rect.top) * canvasEl.height) / rect.height;
+  // Subtract the number gutter: the board no longer starts at canvas 0,0.
+  const px = ((evt.clientX - rect.left) * canvasEl.width) / rect.width - GUTTER_PX;
+  const py = ((evt.clientY - rect.top) * canvasEl.height) / rect.height - GUTTER_PX;
   const offsetX = Math.floor((boardSize - lastPattern.gridW) / 2);
   const offsetY = Math.floor((boardSize - lastPattern.gridH) / 2);
-  const gx = Math.floor(px / CELL_PX) - offsetX;
-  const gy = Math.floor(py / CELL_PX) - offsetY;
+  let gx = Math.floor(px / CELL_PX) - offsetX;
+  let gy = Math.floor(py / CELL_PX) - offsetY;
+  if (clampToGrid) {
+    gx = clamp(gx, 0, lastPattern.gridW - 1);
+    gy = clamp(gy, 0, lastPattern.gridH - 1);
+    return { gx, gy };
+  }
   if (gx < 0 || gx >= lastPattern.gridW || gy < 0 || gy >= lastPattern.gridH) return null;
   return { gx, gy };
 }
 
-// Shared click-and-drag-to-select mechanism for both pattern canvases: track
-// the anchor cell on mousedown, resolve the dragged rectangle on mouseup
-// (wherever the mouse ends up, even outside the canvas) and hand it to
-// whichever canvas-specific callback registered it.
-let patternSelectDrag = null;
-function bindPatternSelect(canvasEl, onSelect) {
+// ---------- Drag/Shift selection engine (shared by both canvases) ----------
+// Plain drag  : replaces the selection with the dragged box
+// Shift+drag  : adds the dragged box to whatever was already selected
+// Shift+click : toggles that one cell, for pixel-level touch-ups
+// Plain click : replaces the selection with that one cell
+
+let selectDrag = null; // {canvasEl, onCommit, redraw, anchor, cur, base, additive, moved}
+
+function dragSelection() {
+  if (!selectDrag) return editorSelection;
+  const out = new Set(selectDrag.base);
+  const { anchor, cur } = selectDrag;
+  const gx0 = Math.min(anchor.gx, cur.gx), gx1 = Math.max(anchor.gx, cur.gx);
+  const gy0 = Math.min(anchor.gy, cur.gy), gy1 = Math.max(anchor.gy, cur.gy);
+  // A shift+click that never moved is a toggle, not a one-cell add — that's
+  // the only way to take a cell back out of the selection.
+  if (selectDrag.additive && !selectDrag.moved) {
+    const k = cellKey(anchor.gx, anchor.gy);
+    if (out.has(k)) out.delete(k); else out.add(k);
+    return out;
+  }
+  for (let gy = gy0; gy <= gy1; gy++) {
+    for (let gx = gx0; gx <= gx1; gx++) out.add(cellKey(gx, gy));
+  }
+  return out;
+}
+
+function bindPatternSelect(canvasEl, onCommit, redraw) {
   canvasEl.addEventListener("mousedown", (evt) => {
     const cell = patternCellFromEvent(evt, canvasEl);
     if (!cell) return;
-    patternSelectDrag = { canvasEl, onSelect, ...cell };
+    evt.preventDefault(); // don't start a native text/image drag mid-selection
+    selectDrag = {
+      canvasEl, onCommit, redraw,
+      anchor: cell, cur: cell, moved: false,
+      additive: evt.shiftKey,
+      base: evt.shiftKey ? new Set(editorSelection) : new Set(),
+    };
+    redraw();
   });
 }
-window.addEventListener("mouseup", (evt) => {
-  if (!patternSelectDrag) return;
-  const { canvasEl, onSelect, gx: gxStart, gy: gyStart } = patternSelectDrag;
-  const end = patternCellFromEvent(evt, canvasEl) || { gx: gxStart, gy: gyStart };
-  patternSelectDrag = null;
-  onSelect({
-    gx0: Math.min(gxStart, end.gx),
-    gy0: Math.min(gyStart, end.gy),
-    gx1: Math.max(gxStart, end.gx) + 1,
-    gy1: Math.max(gyStart, end.gy) + 1,
-  });
+
+window.addEventListener("mousemove", (evt) => {
+  if (!selectDrag) return;
+  const cell = patternCellFromEvent(evt, selectDrag.canvasEl, true);
+  if (!cell) return;
+  if (cell.gx !== selectDrag.cur.gx || cell.gy !== selectDrag.cur.gy) {
+    selectDrag.cur = cell;
+    selectDrag.moved = true;
+    selectDrag.redraw();
+  }
 });
 
-bindPatternSelect(patternCanvas, (selection) => openCellEditor(selection));
-bindPatternSelect(editorPatternCanvas, (selection) => {
-  editorSelection = selection;
+window.addEventListener("mouseup", () => {
+  if (!selectDrag) return;
+  const { onCommit } = selectDrag;
+  const sel = dragSelection();
+  selectDrag = null;
+  editorSelection = sel;
+  onCommit(sel);
+});
+
+bindPatternSelect(patternCanvas, () => openCellEditor(), () => {
+  renderPattern(lastPattern);
+  drawSelectionOverlay(patternCanvas, dragSelection());
+});
+bindPatternSelect(editorPatternCanvas, () => {
   renderEditorPatternCanvas();
   renderEditorRecommendations();
   updateEditorSelectionInfo();
-});
+}, () => renderEditorPatternCanvas());
 
-function openCellEditor(selection) {
+// Outlines an arbitrarily-shaped selection: a translucent wash over every
+// selected cell, plus a border stroked only along edges that face an
+// UNselected cell. Stroking each cell's full box instead would draw a grid
+// of internal lines over the region and make a large selection unreadable.
+function drawSelectionOverlay(canvasEl, sel) {
+  if (!lastPattern || !sel || !sel.size) return;
+  const ctx = canvasEl.getContext("2d");
+  const offsetX = Math.floor((boardSize - lastPattern.gridW) / 2);
+  const offsetY = Math.floor((boardSize - lastPattern.gridH) / 2);
+  const px = (gx) => GUTTER_PX + (offsetX + gx) * CELL_PX;
+  const py = (gy) => GUTTER_PX + (offsetY + gy) * CELL_PX;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(232, 89, 12, 0.28)";
+  for (const k of sel) {
+    const [gx, gy] = k.split(",").map(Number);
+    ctx.fillRect(px(gx), py(gy), CELL_PX, CELL_PX);
+  }
+  ctx.strokeStyle = "#e8590c";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (const k of sel) {
+    const [gx, gy] = k.split(",").map(Number);
+    const x = px(gx), y = py(gy);
+    if (!sel.has(cellKey(gx, gy - 1))) { ctx.moveTo(x, y); ctx.lineTo(x + CELL_PX, y); }
+    if (!sel.has(cellKey(gx, gy + 1))) { ctx.moveTo(x, y + CELL_PX); ctx.lineTo(x + CELL_PX, y + CELL_PX); }
+    if (!sel.has(cellKey(gx - 1, gy))) { ctx.moveTo(x, y); ctx.lineTo(x, y + CELL_PX); }
+    if (!sel.has(cellKey(gx + 1, gy))) { ctx.moveTo(x + CELL_PX, y); ctx.lineTo(x + CELL_PX, y + CELL_PX); }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function openCellEditor() {
   if (!lastPattern || !sourceImage) return;
-  editorSelection = selection;
   cellEditor.hidden = false;
   renderEditorSourceCanvas();
   renderEditorPatternCanvas();
@@ -1269,7 +1509,26 @@ function openCellEditor(selection) {
 
 editorExitBtn.addEventListener("click", () => {
   cellEditor.hidden = true;
-  editorSelection = null;
+  editorSelection = new Set();
+  if (lastPattern) renderPattern(lastPattern);
+});
+
+// Esc closes the editor, Ctrl/Cmd+A selects the whole pattern — both are what
+// you reach for reflexively once the editor feels like a real tool.
+window.addEventListener("keydown", (evt) => {
+  if (cellEditor.hidden) return;
+  if (evt.key === "Escape") {
+    editorExitBtn.click();
+  } else if ((evt.metaKey || evt.ctrlKey) && evt.key.toLowerCase() === "a") {
+    evt.preventDefault();
+    editorSelection = new Set();
+    for (let gy = 0; gy < lastPattern.gridH; gy++) {
+      for (let gx = 0; gx < lastPattern.gridW; gx++) editorSelection.add(cellKey(gx, gy));
+    }
+    renderEditorPatternCanvas();
+    renderEditorRecommendations();
+    updateEditorSelectionInfo();
+  }
 });
 
 function renderEditorSourceCanvas() {
@@ -1283,7 +1542,7 @@ function renderEditorSourceCanvas() {
 // Eyedropper: every click on the original-image panel samples that exact
 // source pixel and applies it straight to whatever cells are selected.
 editorSourceCanvas.addEventListener("click", (evt) => {
-  if (!editorSelection || !sourceFullResCtx) return;
+  if (!editorSelection.size || !sourceFullResCtx) return;
   const rect = editorSourceCanvas.getBoundingClientRect();
   const ox = ((evt.clientX - rect.left) * editorSourceCanvas.width) / rect.width / editorSourceScale;
   const oy = ((evt.clientY - rect.top) * editorSourceCanvas.height) / rect.height / editorSourceScale;
@@ -1296,16 +1555,7 @@ editorSourceCanvas.addEventListener("click", (evt) => {
 function renderEditorPatternCanvas() {
   if (!lastPattern) return;
   drawPatternToCanvas(editorPatternCanvas, lastPattern);
-  if (editorSelection) {
-    const { gridW, gridH } = lastPattern;
-    const offsetX = Math.floor((boardSize - gridW) / 2);
-    const offsetY = Math.floor((boardSize - gridH) / 2);
-    const { gx0, gy0, gx1, gy1 } = editorSelection;
-    const ctx = editorPatternCanvas.getContext("2d");
-    ctx.strokeStyle = "#e0a800";
-    ctx.lineWidth = 3;
-    ctx.strokeRect((offsetX + gx0) * CELL_PX, (offsetY + gy0) * CELL_PX, (gx1 - gx0) * CELL_PX, (gy1 - gy0) * CELL_PX);
-  }
+  drawSelectionOverlay(editorPatternCanvas, dragSelection());
   // Zoom in for a "workbench" feel — editing is easier to aim on a bigger
   // canvas than the compact main preview.
   const dispScale = Math.min(3, Math.max(1, 640 / editorPatternCanvas.width));
@@ -1390,11 +1640,16 @@ function makeColorSwatch(entry, label, title, isClear) {
 
 function renderEditorRecommendations() {
   editorRecommendColors.innerHTML = "";
-  if (!editorSelection || !cropRect || !lastPattern) return;
+  if (!editorSelection.size || !cropRect || !lastPattern) return;
 
   editorRecommendColors.appendChild(makeColorSwatch(null, "不放豆", "清除选中格子（不放豆）", true));
 
-  const { gx0, gy0, gx1, gy1 } = editorSelection;
+  // Colors are ranked by what the source image actually looks like across
+  // the selection's BOUNDING BOX, even when the selection itself is a
+  // scattered shape. Sampling only the exact chosen cells would miss the
+  // surrounding context that makes "which color did this want to be"
+  // answerable, and the box is a good enough stand-in for that context.
+  const { gx0, gy0, gx1, gy1 } = selectionBounds(editorSelection);
   const rectOriginal = gridCellsToOriginalRect(
     gx0, gy0, gx1, gy1, lastPattern.gridW, lastPattern.gridH, cropRect, allowRectCheckbox.checked
   );
@@ -1410,14 +1665,11 @@ function renderEditorRecommendations() {
 }
 
 function applyColorToSelection(entry) {
-  if (!editorSelection || !lastPattern) return;
-  const { gx0, gy0, gx1, gy1 } = editorSelection;
-  for (let gy = gy0; gy < gy1; gy++) {
-    if (gy < 0 || gy >= lastPattern.gridH) continue;
-    for (let gx = gx0; gx < gx1; gx++) {
-      if (gx < 0 || gx >= lastPattern.gridW) continue;
-      lastPattern.cells[gy][gx] = entry;
-    }
+  if (!editorSelection.size || !lastPattern) return;
+  for (const k of editorSelection) {
+    const [gx, gy] = k.split(",").map(Number);
+    if (gy < 0 || gy >= lastPattern.gridH || gx < 0 || gx >= lastPattern.gridW) continue;
+    lastPattern.cells[gy][gx] = entry;
   }
   renderPattern(lastPattern);
   renderUsage(lastPattern);
@@ -1425,14 +1677,61 @@ function applyColorToSelection(entry) {
   renderEditorRecommendations();
 }
 
+// ---------- Mirror ----------
+// Flips a region of the pattern in place. Operates on the selection's
+// BOUNDING BOX rather than only the selected cells: a mirror is a spatial
+// rearrangement, so every cell inside the region has to move for the result
+// to look like a reflection — writing only into a scattered subset would
+// scramble the region instead of flipping it. With nothing selected it
+// mirrors the whole pattern, which is the common case for "I drew this
+// facing the wrong way".
+
+function mirrorPattern(axis) {
+  if (!lastPattern) return;
+  const { gridW, gridH, cells } = lastPattern;
+  const b = editorSelection.size
+    ? selectionBounds(editorSelection)
+    : { gx0: 0, gy0: 0, gx1: gridW, gy1: gridH };
+  const gx0 = clamp(b.gx0, 0, gridW), gx1 = clamp(b.gx1, 0, gridW);
+  const gy0 = clamp(b.gy0, 0, gridH), gy1 = clamp(b.gy1, 0, gridH);
+  const w = gx1 - gx0, h = gy1 - gy0;
+  if (w < 1 || h < 1) return;
+
+  // Snapshot first: mirroring in place would otherwise read cells that the
+  // same pass has already overwritten, and the second half of the region
+  // would come out as a copy of the first rather than its reflection.
+  const snap = [];
+  for (let gy = gy0; gy < gy1; gy++) snap.push(cells[gy].slice(gx0, gx1));
+
+  for (let gy = gy0; gy < gy1; gy++) {
+    for (let gx = gx0; gx < gx1; gx++) {
+      const sy = axis === "v" ? h - 1 - (gy - gy0) : gy - gy0;
+      const sx = axis === "h" ? w - 1 - (gx - gx0) : gx - gx0;
+      cells[gy][gx] = snap[sy][sx];
+    }
+  }
+
+  renderPattern(lastPattern);
+  renderUsage(lastPattern);
+  if (!cellEditor.hidden) {
+    renderEditorPatternCanvas();
+    renderEditorRecommendations();
+  }
+  return { gx0, gy0, gx1, gy1 };
+}
+
+document.getElementById("mirror-h").addEventListener("click", () => mirrorPattern("h"));
+document.getElementById("mirror-v").addEventListener("click", () => mirrorPattern("v"));
+
 function updateEditorSelectionInfo() {
-  if (!editorSelection) {
-    editorSelectionInfo.textContent = "未选中格子";
+  if (!editorSelection.size) {
+    editorSelectionInfo.textContent = "未选中格子 · 拖拽框选，按住 Shift 可继续追加";
     return;
   }
-  const { gx0, gy0, gx1, gy1 } = editorSelection;
-  const w = gx1 - gx0, h = gy1 - gy0;
-  editorSelectionInfo.textContent = `已选中 ${w}×${h} 格（共 ${w * h} 个）`;
+  const b = selectionBounds(editorSelection);
+  const w = b.gx1 - b.gx0, h = b.gy1 - b.gy0;
+  const rect = editorSelection.size === w * h ? `${w}×${h} · ` : "";
+  editorSelectionInfo.textContent = `已选中 ${rect}${editorSelection.size} 个格子`;
 }
 
 // ---------- Export ----------
