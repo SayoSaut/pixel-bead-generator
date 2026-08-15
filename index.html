@@ -154,7 +154,12 @@
         <div class="table-wrap">
           <table id="usage-table">
             <thead>
-              <tr><th>色号</th><th>颜色</th><th class="num">需要</th><th class="num">库存</th></tr>
+              <tr>
+                <th><button class="th-sort" data-sort="code">色号<span class="sort-arrow"></span></button></th>
+                <th>颜色</th>
+                <th class="num"><button class="th-sort" data-sort="count">需要<span class="sort-arrow"></span></button></th>
+                <th class="num"><button class="th-sort" data-sort="stock">库存<span class="sort-arrow"></span></button></th>
+              </tr>
             </thead>
             <tbody></tbody>
           </table>

@@ -856,6 +856,28 @@ tbody tr:hover { background: var(--bg); }
 .inv-row .inv-input { width: 60px; }
 .inv-list { grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); }
 
+/* ---------- Sortable usage table headers ---------- */
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  transition: color 0.15s var(--ease);
+}
+.th-sort:hover { color: var(--ink); }
+.th-sort.is-active { color: var(--accent); }
+.num .th-sort { flex-direction: row-reverse; }
+.sort-arrow { font-size: 8px; line-height: 1; }
+
 </style>
 </head>
 <body>
@@ -1006,7 +1028,12 @@ tbody tr:hover { background: var(--bg); }
         <div class="table-wrap">
           <table id="usage-table">
             <thead>
-              <tr><th>色号</th><th>颜色</th><th class="num">需要</th><th class="num">库存</th></tr>
+              <tr>
+                <th><button class="th-sort" data-sort="code">色号<span class="sort-arrow"></span></button></th>
+                <th>颜色</th>
+                <th class="num"><button class="th-sort" data-sort="count">需要<span class="sort-arrow"></span></button></th>
+                <th class="num"><button class="th-sort" data-sort="stock">库存<span class="sort-arrow"></span></button></th>
+              </tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -2695,12 +2722,55 @@ function drawLegend(ctx, { sorted, total }, top, canvasWidth) {
   });
 }
 
+// ---------- Usage table sorting ----------
+// Only the on-screen table reorders. The legend printed under the pattern
+// and the CSV stay in code order on purpose: those are things you read while
+// physically picking beads out of bags, where you look a code up rather than
+// scan a ranking, and a list whose order depends on a UI toggle you set
+// twenty minutes ago is a list you can't trust.
+let usageSort = { key: "code", dir: 1 };
+
+function compareUsageRows(a, b) {
+  const { key, dir } = usageSort;
+  if (key === "count") return dir * (a.count - b.count) || a.code.localeCompare(b.code);
+  if (key === "stock") return dir * (a.stock - b.stock) || a.code.localeCompare(b.code);
+  // 色号：字母升序 + 数字正序，A9 排在 A10 前面
+  const pa = a.code.match(/^([A-Za-z]+)(\d+)$/), pb = b.code.match(/^([A-Za-z]+)(\d+)$/);
+  if (pa && pb) return dir * (pa[1] === pb[1] ? +pa[2] - +pb[2] : pa[1].localeCompare(pb[1]));
+  return dir * a.code.localeCompare(b.code);
+}
+
+function updateSortArrows() {
+  for (const btn of document.querySelectorAll(".th-sort")) {
+    const active = btn.dataset.sort === usageSort.key;
+    btn.classList.toggle("is-active", active);
+    const arrow = btn.querySelector(".sort-arrow");
+    if (arrow) arrow.textContent = active ? (usageSort.dir > 0 ? "▲" : "▼") : "";
+  }
+}
+
+document.querySelectorAll(".th-sort").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const key = btn.dataset.sort;
+    // 同一列再点一次翻转方向；换列时给个合理的初始方向 —— 数量类的列，
+    // 人想看的多半是"最多的是哪些"，所以从大到小开始。
+    if (usageSort.key === key) usageSort.dir *= -1;
+    else usageSort = { key, dir: key === "code" ? 1 : -1 };
+    if (lastPattern) renderUsage(lastPattern);
+  });
+});
+
 function renderUsage({ cells }) {
   const { sorted, total } = countBeads(cells);
   const codeToIndex = new Map(MARD_PALETTE.map((e) => [e.code, e.index]));
 
+  const rows = sorted
+    .map(([code, v]) => ({ code, hex: v.hex, count: v.count, stock: stockOf(code) }))
+    .sort(compareUsageRows);
+  updateSortArrows();
+
   usageTableBody.innerHTML = "";
-  for (const [code, { hex, count }] of sorted) {
+  for (const { code, hex, count } of rows) {
     const tr = document.createElement("tr");
     const idx = codeToIndex.get(code);
     const have = stockOf(code);
