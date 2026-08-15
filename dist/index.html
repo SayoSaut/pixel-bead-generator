@@ -553,6 +553,80 @@ tbody tr:hover { background: var(--bg); }
   vertical-align: middle;
 }
 
+/* ---------- Inventory ---------- */
+
+.usage-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-ghost.danger { color: #b42318; border-color: #f0c4bf; }
+.btn-ghost.danger:hover { background: #fff1ef; border-color: #d9534f; }
+.btn-ghost:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.inventory-status {
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.inventory-status.is-empty { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
+.inventory-status.is-ok { background: #eefaf1; border: 1px solid #bfe6cc; color: #1d6b3a; }
+.inventory-status.is-short { background: #fff1ef; border: 1px solid #f3c8c2; color: #b42318; }
+
+.usage-row.is-short td { background: #fff7f6; }
+.stock-cell .short { color: #b42318; font-weight: 700; }
+
+.inventory-panel {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 30, 0.35);
+  z-index: 1100;
+  overflow: auto;
+  padding: 40px 20px;
+}
+.inventory-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 20px;
+}
+
+.inv-tools { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+.file-btn { position: relative; overflow: hidden; display: inline-block; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+
+.inv-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+.inv-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.inv-row.is-short { border-color: #f3c8c2; background: #fff7f6; }
+.inv-code { font-weight: 650; font-size: 12.5px; min-width: 40px; }
+.inv-need { flex: 1; font-size: 11px; color: var(--muted); text-align: right; }
+.inv-input {
+  width: 68px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.inv-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
 /* ---------- Cell editor ---------- */
 
 .cell-editor {
@@ -791,12 +865,18 @@ tbody tr:hover { background: var(--bg); }
       <div class="card usage">
         <div class="card-head">
           <h2>用豆清单</h2>
-          <span class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</span>
+          <div class="usage-tools">
+            <button id="inventory-open" class="btn-ghost">管理库存</button>
+            <button id="inventory-deduct" class="btn-ghost" disabled>✓ 拼完了，扣减库存</button>
+            <button id="inventory-undo" class="btn-ghost" disabled>撤销上次扣减</button>
+          </div>
         </div>
+        <p class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</p>
+        <div class="inventory-status is-empty" id="inventory-status"></div>
         <div class="table-wrap">
           <table id="usage-table">
             <thead>
-              <tr><th>色号</th><th>颜色</th><th class="num">颗数</th></tr>
+              <tr><th>色号</th><th>颜色</th><th class="num">需要</th><th class="num">库存</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -804,6 +884,24 @@ tbody tr:hover { background: var(--bg); }
       </div>
     </section>
   </main>
+
+  <section class="inventory-panel" id="inventory-panel" hidden>
+    <div class="inventory-inner">
+      <div class="card-head">
+        <h2>豆子库存</h2>
+        <button id="inventory-close" class="btn-ghost">关闭</button>
+      </div>
+      <p class="hint">记录你手上每个色号还有多少颗。数据只存在这台电脑的浏览器里，建议偶尔导出备份。</p>
+      <div class="inv-tools">
+        <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
+        <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
+        <button id="inventory-export" class="btn-ghost">导出 CSV</button>
+        <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
+        <button id="inventory-clear" class="btn-ghost danger">清空</button>
+      </div>
+      <div class="inv-list" id="inventory-list"></div>
+    </div>
+  </section>
 
   <section class="cell-editor" id="cell-editor" hidden>
     <div class="cell-editor-header">
@@ -2415,16 +2513,281 @@ function renderUsage({ cells }) {
   for (const [code, { hex, count }] of sorted) {
     const tr = document.createElement("tr");
     const idx = codeToIndex.get(code);
-    tr.className = "usage-row" + (idx === highlightIndex ? " is-active" : "");
-    tr.innerHTML = `<td>${code}</td><td><span class="swatch" style="background:${hex}"></span></td><td class="num">${count}</td>`;
+    const have = stockOf(code);
+    const short = Math.max(0, count - have);
+    tr.className = "usage-row" + (idx === highlightIndex ? " is-active" : "") + (short ? " is-short" : "");
+    tr.innerHTML =
+      `<td>${code}</td>` +
+      `<td><span class="swatch" style="background:${hex}"></span></td>` +
+      `<td class="num">${count}</td>` +
+      `<td class="num stock-cell">${short ? `<span class="short">差 ${short}</span>` : have}</td>`;
     tr.addEventListener("click", () => setHighlight(idx));
     usageTableBody.appendChild(tr);
   }
   const tr = document.createElement("tr");
   tr.className = "usage-total";
-  tr.innerHTML = `<td>合计</td><td>${sorted.length} 色</td><td class="num">${total}</td>`;
+  const totalHave = sorted.reduce((n, [code]) => n + stockOf(code), 0);
+  tr.innerHTML = `<td>合计</td><td>${sorted.length} 色</td><td class="num">${total}</td><td class="num">${totalHave}</td>`;
   usageTableBody.appendChild(tr);
+
+  renderInventoryStatus(sorted, total);
 }
+
+// ---------- Bead inventory ----------
+// Kept in the browser's own storage rather than a file: the whole app is
+// client-side and this is personal bookkeeping, so there's nothing to sync
+// and nowhere to sync it to. CSV export exists so it isn't trapped there —
+// clearing site data would otherwise lose the lot.
+//
+// Keyed by color CODE, not palette index: the code is what's printed on the
+// bag you bought, and it stays meaningful if the palette array ever changes
+// order or grows.
+const INVENTORY_KEY = "pixel-bead-inventory-v1";
+const INVENTORY_LOG_KEY = "pixel-bead-inventory-log-v1";
+
+function storage() {
+  try { return window.localStorage || null; } catch (e) { return null; } // private mode / blocked
+}
+function loadStored(key, fallback) {
+  const s = storage();
+  if (!s) return fallback;
+  try { return JSON.parse(s.getItem(key)) ?? fallback; } catch (e) { return fallback; }
+}
+function saveStored(key, value) {
+  const s = storage();
+  if (!s) return;
+  try { s.setItem(key, JSON.stringify(value)); } catch (e) { /* quota / blocked — keep going in memory */ }
+}
+
+let inventory = loadStored(INVENTORY_KEY, {});
+let inventoryLog = loadStored(INVENTORY_LOG_KEY, []);
+
+function stockOf(code) {
+  return Math.max(0, Math.floor(inventory[code] || 0));
+}
+
+function setStock(code, n) {
+  const v = Math.max(0, Math.floor(Number(n) || 0));
+  if (v) inventory[code] = v; else delete inventory[code];
+  saveStored(INVENTORY_KEY, inventory);
+}
+
+// What the current pattern needs vs. what's on hand.
+function shortageReport(sorted) {
+  const lines = sorted.map(([code, { count }]) => {
+    const have = stockOf(code);
+    return { code, need: count, have, short: Math.max(0, count - have) };
+  });
+  const shortLines = lines.filter((l) => l.short > 0);
+  return {
+    lines,
+    shortLines,
+    shortColors: shortLines.length,
+    shortBeads: shortLines.reduce((n, l) => n + l.short, 0),
+  };
+}
+
+const inventoryStatus = document.getElementById("inventory-status");
+const deductBtn = document.getElementById("inventory-deduct");
+const undoBtn = document.getElementById("inventory-undo");
+
+function renderInventoryStatus(sorted, total) {
+  if (!inventoryStatus) return;
+  const anyStock = Object.keys(inventory).length > 0;
+  if (deductBtn) deductBtn.disabled = !sorted.length;
+  if (undoBtn) undoBtn.disabled = !inventoryLog.length;
+
+  if (!anyStock) {
+    inventoryStatus.className = "inventory-status is-empty";
+    inventoryStatus.textContent = "还没有登记库存。点「管理库存」录入你手上的豆子，之后就能看出这张图缺什么。";
+    return;
+  }
+  const rep = shortageReport(sorted);
+  if (rep.shortColors === 0) {
+    inventoryStatus.className = "inventory-status is-ok";
+    inventoryStatus.textContent = `库存够拼这张图（需要 ${total} 颗，共 ${sorted.length} 色）。`;
+  } else {
+    inventoryStatus.className = "inventory-status is-short";
+    const worst = rep.shortLines.slice().sort((a, b) => b.short - a.short).slice(0, 4)
+      .map((l) => `${l.code} 差 ${l.short}`).join("、");
+    inventoryStatus.textContent =
+      `库存不足：${rep.shortColors} 种颜色共差 ${rep.shortBeads} 颗（${worst}${rep.shortColors > 4 ? " 等" : ""}）。`;
+  }
+}
+
+// Deduction is an explicit action, never a side effect of exporting or
+// rendering — you often export a chart just to look at it, and silently
+// spending your stock for that would be both wrong and hard to notice.
+// Every deduction is logged so it can be undone.
+function deductCurrentPattern() {
+  if (!lastPattern) return;
+  const { sorted, total } = countBeads(lastPattern.cells);
+  if (!sorted.length) return;
+  const rep = shortageReport(sorted);
+  const warn = rep.shortColors
+    ? `\n\n注意：有 ${rep.shortColors} 种颜色库存不足，共差 ${rep.shortBeads} 颗。继续的话这些颜色会扣到 0。`
+    : "";
+  if (!window.confirm(`从库存中扣除这张图纸的用量？\n${sorted.length} 色 / ${total} 颗。${warn}`)) return;
+
+  const entry = { at: Date.now(), board: boardSize, total, items: {} };
+  for (const [code, { count }] of sorted) {
+    const have = stockOf(code);
+    entry.items[code] = Math.min(have, count); // record what was actually taken
+    setStock(code, have - count);
+  }
+  inventoryLog.push(entry);
+  if (inventoryLog.length > 50) inventoryLog = inventoryLog.slice(-50);
+  saveStored(INVENTORY_LOG_KEY, inventoryLog);
+  renderUsage(lastPattern);
+  renderInventoryEditor();
+}
+
+function undoLastDeduction() {
+  const entry = inventoryLog.pop();
+  if (!entry) return;
+  // Give back exactly what was taken, so undoing a deduction that ran into a
+  // shortage doesn't invent beads that were never there.
+  for (const [code, taken] of Object.entries(entry.items)) setStock(code, stockOf(code) + taken);
+  saveStored(INVENTORY_LOG_KEY, inventoryLog);
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+}
+
+if (deductBtn) deductBtn.addEventListener("click", deductCurrentPattern);
+if (undoBtn) undoBtn.addEventListener("click", undoLastDeduction);
+
+// ---------- Inventory editor panel ----------
+const inventoryPanel = document.getElementById("inventory-panel");
+const inventoryList = document.getElementById("inventory-list");
+const inventoryFilter = document.getElementById("inventory-filter");
+let inventoryShowAll = false;
+
+function inventoryRows() {
+  // Default view is "colors that matter right now": what this pattern needs
+  // plus anything already stocked. Listing all 291 up front turns a quick
+  // top-up into scrolling.
+  const codes = new Set(Object.keys(inventory));
+  if (!inventoryShowAll && lastPattern) {
+    for (const [code] of countBeads(lastPattern.cells).sorted) codes.add(code);
+  }
+  const pool = inventoryShowAll ? scopedPalette().map((e) => e.code) : [...codes];
+  const need = new Map(lastPattern ? countBeads(lastPattern.cells).sorted.map(([c, v]) => [c, v.count]) : []);
+  const byCode = new Map(MARD_PALETTE.map((e) => [e.code, e]));
+  return pool
+    .filter((c) => byCode.has(c))
+    .sort((a, b) => {
+      const pa = a.match(/^([A-Za-z]+)(\d+)$/), pb = b.match(/^([A-Za-z]+)(\d+)$/);
+      if (pa && pb) return pa[1] === pb[1] ? +pa[2] - +pb[2] : pa[1].localeCompare(pb[1]);
+      return a.localeCompare(b);
+    })
+    .map((code) => ({ code, entry: byCode.get(code), have: stockOf(code), need: need.get(code) || 0 }));
+}
+
+function renderInventoryEditor() {
+  if (!inventoryList) return;
+  const rows = inventoryRows();
+  inventoryList.innerHTML = "";
+  if (!rows.length) {
+    inventoryList.innerHTML = `<p class="hint">先生成一张图纸，或点「显示全部色号」手动录入。</p>`;
+    return;
+  }
+  for (const { code, entry, have, need } of rows) {
+    const row = document.createElement("div");
+    row.className = "inv-row" + (need && have < need ? " is-short" : "");
+    row.innerHTML =
+      `<span class="swatch" style="background:${entry.hex}"></span>` +
+      `<span class="inv-code">${code}</span>` +
+      `<span class="inv-need">${need ? `本图需 ${need}` : ""}</span>` +
+      `<input type="number" min="0" step="1" value="${have}" class="inv-input" aria-label="${code} 库存" />`;
+    const input = row.querySelector(".inv-input");
+    input.addEventListener("change", () => {
+      setStock(code, input.value);
+      if (lastPattern) renderUsage(lastPattern);
+      row.classList.toggle("is-short", !!need && stockOf(code) < need);
+    });
+    inventoryList.appendChild(row);
+  }
+}
+
+function bindIfPresent(id, event, handler) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(event, handler);
+  return el;
+}
+
+bindIfPresent("inventory-open", "click", () => {
+  inventoryPanel.hidden = false;
+  renderInventoryEditor();
+});
+bindIfPresent("inventory-close", "click", () => { inventoryPanel.hidden = true; });
+
+if (inventoryFilter) {
+  inventoryFilter.addEventListener("click", () => {
+    inventoryShowAll = !inventoryShowAll;
+    inventoryFilter.textContent = inventoryShowAll ? "只显示相关色号" : "显示全部色号";
+    renderInventoryEditor();
+  });
+}
+
+// Fill in exactly what the current pattern is missing — the common case is
+// "I just bought enough for this piece", and typing 30-odd numbers by hand
+// to express that is the kind of chore that stops people using the feature.
+bindIfPresent("inventory-fill", "click", () => {
+  if (!lastPattern) return;
+  const { sorted } = countBeads(lastPattern.cells);
+  let touched = 0;
+  for (const [code, { count }] of sorted) {
+    if (stockOf(code) < count) { setStock(code, count); touched++; }
+  }
+  renderUsage(lastPattern);
+  renderInventoryEditor();
+  if (!touched) window.alert("库存已经够拼这张图了，没有需要补的颜色。");
+});
+
+bindIfPresent("inventory-clear", "click", () => {
+  if (!window.confirm("清空全部库存记录？此操作不能撤销。")) return;
+  inventory = {};
+  inventoryLog = [];
+  saveStored(INVENTORY_KEY, inventory);
+  saveStored(INVENTORY_LOG_KEY, inventoryLog);
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+});
+
+bindIfPresent("inventory-export", "click", () => {
+  const rows = Object.entries(inventory).filter(([, n]) => n > 0);
+  let csv = "色号,库存\n";
+  for (const [code, n] of rows) csv += `${code},${n}\n`;
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.download = "拼豆库存.csv";
+  a.href = URL.createObjectURL(blob);
+  a.click();
+});
+
+bindIfPresent("inventory-import", "change", (evt) => {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const known = new Set(MARD_PALETTE.map((e) => e.code));
+    let applied = 0, skipped = 0;
+    for (const line of String(reader.result).split(/\r?\n/)) {
+      const [rawCode, rawN] = line.split(",");
+      if (!rawCode || rawN === undefined) continue;
+      const code = rawCode.replace(/^﻿/, "").trim();
+      const n = Number(String(rawN).trim());
+      if (!known.has(code) || !Number.isFinite(n)) { if (code && code !== "色号") skipped++; continue; }
+      setStock(code, n);
+      applied++;
+    }
+    if (lastPattern) renderUsage(lastPattern);
+    renderInventoryEditor();
+    window.alert(`已导入 ${applied} 个色号的库存${skipped ? `，${skipped} 行无法识别已跳过` : ""}。`);
+    evt.target.value = "";
+  };
+  reader.readAsText(file);
+});
 
 // ---------- Cell editor (manual per-cell color fixing) ----------
 // Replaces the old auto text/detail regions: those tried to guess where

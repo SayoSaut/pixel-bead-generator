@@ -36,8 +36,10 @@ const el = (id) => (els[id] = els[id] || {
   id, style: {}, dataset: {}, classList: { toggle() {}, add() {}, contains: () => false },
   children: [], value: "1", checked: false, textContent: "", innerHTML: "", hidden: false,
   clientWidth: 800, clientHeight: 600, scrollLeft: 0, scrollTop: 0,
-  addEventListener() {}, appendChild() {}, querySelector: () => null,
-  querySelectorAll: () => [], closest: () => null,
+  addEventListener() {}, appendChild() {}, removeChild() {},
+  // 返回另一个 stub 而不是 null —— 代码里会对 createElement 出来的节点
+  // 再做 querySelector 拿子元素（比如库存行里的 input）。
+  querySelector: () => el(), querySelectorAll: () => [], closest: () => null,
   getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
 });
 

@@ -142,12 +142,18 @@
       <div class="card usage">
         <div class="card-head">
           <h2>用豆清单</h2>
-          <span class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</span>
+          <div class="usage-tools">
+            <button id="inventory-open" class="btn-ghost">管理库存</button>
+            <button id="inventory-deduct" class="btn-ghost" disabled>✓ 拼完了，扣减库存</button>
+            <button id="inventory-undo" class="btn-ghost" disabled>撤销上次扣减</button>
+          </div>
         </div>
+        <p class="hint">点一行可在图纸上高亮该颜色 · 图纸下方也会打印一份</p>
+        <div class="inventory-status is-empty" id="inventory-status"></div>
         <div class="table-wrap">
           <table id="usage-table">
             <thead>
-              <tr><th>色号</th><th>颜色</th><th class="num">颗数</th></tr>
+              <tr><th>色号</th><th>颜色</th><th class="num">需要</th><th class="num">库存</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -155,6 +161,24 @@
       </div>
     </section>
   </main>
+
+  <section class="inventory-panel" id="inventory-panel" hidden>
+    <div class="inventory-inner">
+      <div class="card-head">
+        <h2>豆子库存</h2>
+        <button id="inventory-close" class="btn-ghost">关闭</button>
+      </div>
+      <p class="hint">记录你手上每个色号还有多少颗。数据只存在这台电脑的浏览器里，建议偶尔导出备份。</p>
+      <div class="inv-tools">
+        <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
+        <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
+        <button id="inventory-export" class="btn-ghost">导出 CSV</button>
+        <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
+        <button id="inventory-clear" class="btn-ghost danger">清空</button>
+      </div>
+      <div class="inv-list" id="inventory-list"></div>
+    </div>
+  </section>
 
   <section class="cell-editor" id="cell-editor" hidden>
     <div class="cell-editor-header">
