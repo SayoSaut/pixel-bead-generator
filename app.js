@@ -1328,6 +1328,20 @@ function updateHighlightInfo() {
 // you're placing beads from whichever corner you started at.
 const GUTTER_PX = 30; // room for the row/column numbers along the top and left
 
+// 把间距为 step 的等分线居中铺在 size 格上，返回所有线的位置。
+// 除不尽时余数平均分到两侧，而不是从一边开始排、把零头全甩到另一边 ——
+// 无论你从哪个角开始数格子，落到的都是同一批线。
+//
+// 10 格的数数辅助线和 26 格的拼板接缝线用的是同一套逻辑，只是 step 不同。
+function centeredLines(size, step) {
+  const span = Math.floor(size / step) * step;
+  if (span <= 0) return [];
+  const margin = (size - span) / 2;
+  const lines = [];
+  for (let i = margin; i <= size - margin + 0.001; i += step) lines.push(Math.round(i));
+  return lines;
+}
+
 function guideMargin(size) {
   return (size - Math.floor(size / 10) * 10) / 2;
 }
@@ -1338,9 +1352,7 @@ function drawGuides(ctx, size, gutter) {
 
   ctx.strokeStyle = "rgba(30,30,40,0.55)";
   ctx.lineWidth = 2;
-  const lines = [];
-  for (let i = margin; i <= size - margin + 0.001; i += 10) lines.push(Math.round(i));
-  for (const i of lines) {
+  for (const i of centeredLines(size, 10)) {
     ctx.beginPath();
     ctx.moveTo(gutter + i * CELL_PX, gutter);
     ctx.lineTo(gutter + i * CELL_PX, gutter + boardPx);
@@ -1465,11 +1477,12 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
     ctx.lineTo(size * CELL_PX, i * CELL_PX);
     ctx.stroke();
   }
-  // 拼接缝：每 26 格是一块实体拼豆板的边界。只有当板子尺寸正好是 26 的整数
-  // 倍时才画 —— 自定义尺寸（比如 40）本来就拼不出整数块，画出来只会误导。
+  // 拼接缝：每 26 格是一块实体拼豆板的边界。尺寸不是 26 整数倍时（比如 40）
+  // 把这些线居中摆 —— 你手上的板子还是 26 格的，只是拼不满，剩下的零头分在
+  // 两边。从边上开始排会让零头全堆在一侧，跟实际怎么拼对不上。
   ctx.strokeStyle = "rgba(150,140,120,0.7)";
   ctx.lineWidth = 1.5;
-  for (let i = 0; size % BOARD_UNIT === 0 && i <= size; i += BOARD_UNIT) {
+  for (const i of centeredLines(size, BOARD_UNIT)) {
     ctx.beginPath();
     ctx.moveTo(i * CELL_PX, 0);
     ctx.lineTo(i * CELL_PX, boardPx);

@@ -83,14 +83,29 @@ run("removeSmallRegions")(c3, 5, 5, 4);
 assert.strictEqual(c3[2][2], null, "抠图空洞不能被填上");
 console.log("PASS removeSmallRegions / 平滑：抠图空洞保持为空");
 
-const gm = run("guideMargin");
+const cl = run("centeredLines");
+// 10 格的数数辅助线
 for (const [size, expect] of [[52, 1], [78, 4], [104, 2]]) {
-  assert.strictEqual(gm(size), expect);
-  const lines = [];
-  for (let i = gm(size); i <= size - gm(size) + 0.001; i += 10) lines.push(i);
-  assert.strictEqual(lines[lines.length - 1], size - expect);
+  const lines = cl(size, 10);
+  assert.strictEqual(lines[0], expect, `${size} 板边距应为 ${expect}`);
+  assert.strictEqual(lines[lines.length - 1], size - expect, "两侧边距必须相等");
   console.log(`PASS ${size}×${size} 辅助线：边距 ${expect}，${lines.length} 条 → ${lines.join(",")}`);
 }
+
+// 26 格的拼板接缝线 —— 整数倍时从 0 开始，非整数倍时居中
+for (const [size, expect] of [[52, [0,26,52]], [78, [0,26,52,78]], [104, [0,26,52,78,104]],
+                              [40, [7,33]], [60, [4,30,56]], [100, [11,37,63,89]]]) {
+  const lines = cl(size, 26);
+  assert.strictEqual(JSON.stringify(lines), JSON.stringify(expect),
+    `${size} 板接缝线应为 ${expect}，实际 ${lines}`);
+  const left = lines[0], right = size - lines[lines.length - 1];
+  assert.strictEqual(left, right, `${size}: 两侧余量必须相等（${left} vs ${right}）`);
+  console.log(`PASS ${size} 板接缝线居中：${lines.join(",")}（两侧各余 ${left} 格）`);
+}
+
+// 板子比一块实体板还小时，没有接缝可画
+assert.strictEqual(JSON.stringify(cl(20, 26)), "[]", "小于 26 格时不应画接缝线");
+console.log("PASS 板子小于一块实体板时不画接缝线");
 
 set("boardSize", 52);
 run("cellEditor").hidden = true;
