@@ -17,7 +17,7 @@ const { window } = dom, d = window.document;
 
 // A1 x1、A9 x5、A10 x3、B12 x2
 window.eval(`
-  boardSize = 52; sourceImage = {};
+  boardW = boardH = boardSize = 52; sourceImage = {};
   const P = (c) => MARD_PALETTE.find(e => e.code === c);
   const cells = [
     [P("A9"), P("A9"), P("A9"), P("A9")],

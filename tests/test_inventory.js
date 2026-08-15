@@ -27,7 +27,7 @@ const cells = [
   [A, C, B],
   [C, C, B],
 ];
-set("boardSize", 52);
+set("boardW", 52), set("boardH", 52), set("boardSize", 52);
 set("lastPattern", { gridW: 3, gridH: 3, cells });
 set("inventory", { A1: 2, B12: 10, C4: 0 });
 const { sorted, total } = run("countBeads")(cells);
@@ -86,7 +86,7 @@ console.log("\nALL INVENTORY TESTS PASSED");
 {
   const A = byCode.A1, B = byCode.B12;
   const g = [[A, A, B], [A, B, B]];
-  set("boardSize", 52);
+  set("boardW", 52), set("boardH", 52), set("boardSize", 52);
   set("lastPattern", { gridW: 3, gridH: 2, cells: g });
   set("inventory", { A1: 10, C4: 999 });        // C4 不在图纸里，但已登记
   set("inventoryShowAll", false);

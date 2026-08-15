@@ -7,7 +7,7 @@ const byCode = Object.fromEntries(P.map((e) => [e.code, e]));
 const CELL_PX = run("CELL_PX"), GUT = run("GUTTER_PX");
 const boardPx = (n) => n * CELL_PX + GUT;
 
-run("boardSize = 52");
+run("boardW = boardH = boardSize = 52");
 const grid = [
   [byCode.A10, byCode.A9, byCode.B2],
   [byCode.A9,  null,      byCode.A1],
@@ -44,7 +44,7 @@ assert.ok(Math.max(...texts.map((t) => t.args[2])) < withLegend.height, "清单�
 console.log("PASS 清单内容完整且不溢出画布");
 
 for (const size of [52, 78, 104]) {
-  run("boardSize = " + size);
+  run("boardW = boardH = boardSize = " + size);
   const many = P.slice(0, 221);
   const cells = [many.slice(0, 111), many.slice(111)];
   const c = makeCanvas("big" + size);

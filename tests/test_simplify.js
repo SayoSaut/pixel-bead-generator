@@ -107,7 +107,7 @@ for (const [size, expect] of [[52, [0,26,52]], [78, [0,26,52,78]], [104, [0,26,5
 assert.strictEqual(JSON.stringify(cl(20, 26)), "[]", "小于 26 格时不应画接缝线");
 console.log("PASS 板子小于一块实体板时不画接缝线");
 
-set("boardSize", 52);
+set("boardW", 52), set("boardH", 52), set("boardSize", 52);
 run("cellEditor").hidden = true;
 const mk = () => [
   [byCode.A1, byCode.A9, byCode.B2, byCode.C4],

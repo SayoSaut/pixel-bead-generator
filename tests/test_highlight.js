@@ -15,7 +15,7 @@ const cells = [
   [A, null, C, A, B],
 ];
 const gridW = 5, gridH = 3;
-set("boardSize", 52);
+set("boardW", 52), set("boardH", 52), set("boardSize", 52);
 set("lastPattern", { gridW, gridH, cells });
 run("cellEditor").hidden = true;
 

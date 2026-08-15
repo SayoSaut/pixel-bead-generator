@@ -53,9 +53,11 @@
           <button class="seg-btn" data-size="104">104×104<em>4×4 块</em></button>
         </div>
         <div class="custom-size">
-          <label for="custom-size-input">自定义</label>
-          <input type="number" id="custom-size-input" min="16" max="160" step="1" placeholder="40" />
-          <span class="hint">格见方</span>
+          <label for="custom-size-w">自定义</label>
+          <input type="number" id="custom-size-w" min="16" max="160" step="1" placeholder="40" aria-label="宽（格）" />
+          <span class="hint">×</span>
+          <input type="number" id="custom-size-h" min="16" max="160" step="1" placeholder="35" aria-label="高（格）" />
+          <span class="hint">格</span>
           <button id="custom-size-apply" class="btn-ghost">应用</button>
         </div>
         <label class="slider-label" for="fill-slider">
@@ -85,9 +87,9 @@
 
         <div class="sub-group">
           <span class="sub-title">细节与色彩补偿</span>
-          <p class="hint">板子越小、原图笔触越碎，越需要往上调。</p>
+          <p class="hint">板子越小、原图笔触越碎，越需要往上调。结构增强会把每个色块内部压成一片，同时把区块之间的界限推得更清楚。</p>
           <label class="slider-label" for="sharpen-slider">
-            细节增强
+            结构增强<span class="hint"> · 区块内压平、边界变利</span>
             <output id="sharpen-value">适中</output>
           </label>
           <input type="range" id="sharpen-slider" min="0" max="4" step="1" value="2" />

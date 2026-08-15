@@ -21,7 +21,10 @@ let sourceImage = null;
 let sourceFullResCtx = null; // full-resolution offscreen 2D context for the current sourceImage, used by the editor eyedropper
 let displayScale = 1;        // sourceCanvas px per original-image px
 let cropRect = null;         // {x, y, w, h} in ORIGINAL image pixel coords — the overall render region
-let boardSize = 78;          // default middle option
+// 板子不再假定是正方形：很多人手上的成品比例就不是 1:1（40×35 之类）。
+// boardSize 保留为"较长边"，仅用于超采样判断等与形状无关的地方。
+let boardW = 78, boardH = 78;
+let boardSize = 78;
 let lastPattern = null;      // { gridW, gridH, cells: [[paletteEntry]] }
 let drag = null;             // { target: 'crop', mode, startOrig:{x,y}, startRect:{...} }
 let zoomLevel = 1;
@@ -395,17 +398,22 @@ function clamp(v, lo, hi) {
 // 板子尺寸不再限定于 52/78/104 —— 那三个是标准拼豆板的整数倍，但很多人
 // 就是习惯拼 40×40 这样的尺寸，或者手上的板子本来就拼不出整数倍。
 const MIN_BOARD = 16, MAX_BOARD = 160;
-const customSizeInput = document.getElementById("custom-size-input");
+const customWInput = document.getElementById("custom-size-w");
+const customHInput = document.getElementById("custom-size-h");
 
-function setBoardSize(n) {
-  const size = clamp(Math.round(Number(n) || 0), MIN_BOARD, MAX_BOARD);
-  boardSize = size;
+function setBoard(w, h) {
+  boardW = clamp(Math.round(Number(w) || 0), MIN_BOARD, MAX_BOARD);
+  boardH = clamp(Math.round(Number(h) || boardW), MIN_BOARD, MAX_BOARD);
+  boardSize = Math.max(boardW, boardH);
+  const isPreset = boardW === boardH && [52, 78, 104].includes(boardW);
   [...boardOptions.children].forEach((b) =>
-    b.classList.toggle("active", parseInt(b.dataset.size, 10) === size)
+    b.classList.toggle("active", isPreset && parseInt(b.dataset.size, 10) === boardW)
   );
-  if (customSizeInput) customSizeInput.value = [52, 78, 104].includes(size) ? "" : size;
+  if (customWInput) customWInput.value = isPreset ? "" : boardW;
+  if (customHInput) customHInput.value = isPreset ? "" : boardH;
   regenerate();
 }
+function setBoardSize(n) { setBoard(n, n); }
 
 boardOptions.addEventListener("click", (e) => {
   const btn = e.target.closest(".seg-btn");
@@ -416,10 +424,17 @@ boardOptions.addEventListener("click", (e) => {
   if (parseInt(b.dataset.size, 10) === boardSize) b.classList.add("active");
 });
 
-bindIfPresent("custom-size-apply", "click", () => setBoardSize(customSizeInput.value));
-if (customSizeInput) {
-  customSizeInput.addEventListener("keydown", (evt) => {
-    if (evt.key === "Enter") { evt.preventDefault(); setBoardSize(customSizeInput.value); }
+function applyCustomBoard() {
+  // 只填了一个就当正方形 —— 想要 40×40 不必把 40 打两遍。
+  const w = Number(customWInput.value) || Number(customHInput.value);
+  const h = Number(customHInput.value) || Number(customWInput.value);
+  if (w && h) setBoard(w, h);
+}
+bindIfPresent("custom-size-apply", "click", applyCustomBoard);
+for (const input of [customWInput, customHInput]) {
+  if (!input) continue;
+  input.addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter") { evt.preventDefault(); applyCustomBoard(); }
   });
 }
 
@@ -444,22 +459,24 @@ const sharpenValue = document.getElementById("sharpen-value");
 const vividSlider = document.getElementById("vivid-slider");
 const vividValue = document.getElementById("vivid-value");
 
-const SHARPEN_STEPS = [
-  { label: "关闭", amount: 0 },
-  { label: "轻微", amount: 0.35 },
-  { label: "适中", amount: 0.7 },
-  { label: "较强", amount: 1.1 },
-  { label: "最强", amount: 1.6 },
+// radius 决定"多大范围算一个区块"，passes 决定压得多死，sharpen 是压平之后
+// 补的一点边界强调。
+const STRUCTURE_STEPS = [
+  { label: "关闭",  radius: 0, passes: 0, sharpen: 0 },
+  { label: "轻微",  radius: 1, passes: 1, sharpen: 0.2 },
+  { label: "适中",  radius: 2, passes: 1, sharpen: 0.35 },
+  { label: "较强",  radius: 2, passes: 2, sharpen: 0.5 },
+  { label: "最强",  radius: 3, passes: 2, sharpen: 0.6 },
 ];
 
-function sharpenAmount() {
-  return (SHARPEN_STEPS[parseInt(sharpenSlider.value, 10)] || SHARPEN_STEPS[0]).amount;
+function structureSetting() {
+  return STRUCTURE_STEPS[parseInt(sharpenSlider.value, 10)] || STRUCTURE_STEPS[0];
 }
 function vividAmount() {
   return (parseInt(vividSlider.value, 10) || 100) / 100;
 }
 function syncDetailLabels() {
-  sharpenValue.textContent = (SHARPEN_STEPS[parseInt(sharpenSlider.value, 10)] || SHARPEN_STEPS[0]).label;
+  sharpenValue.textContent = structureSetting().label;
   const v = vividAmount();
   vividValue.textContent = v <= 1.001 ? "原样" : `×${v.toFixed(1)}`;
 }
@@ -467,42 +484,101 @@ syncDetailLabels();
 sharpenSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 vividSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 
-// 就地增强：先做一次 3x3 盒式模糊当作"低频"，再把原图与它的差（高频，也就
-// 是边缘）按 amount 加回去；随后按需拉开彩度。两步都在中间图上做，也就是
-// 量化之前 —— 之后再做就只能加工已经丢失的信息了。
-function enhanceImageData(imageData, sharpen, vivid) {
-  if (sharpen <= 0 && vivid <= 1.001) return imageData;
-  const { width: W, height: H, data } = imageData;
-  const out = new Uint8ClampedArray(data);
-
-  if (sharpen > 0) {
-    const blur = new Float32Array(W * H * 3);
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          const yy = y + dy;
+// ---------- Kuwahara: 按区块压平，只留边界 ----------
+// 一般的锐化（USM）在这里是错的思路：它无差别地放大所有高频，笔触噪点和
+// 真正的轮廓一起被放大，结果是更花而不是更清楚。
+//
+// Kuwahara 反过来做：每个像素看它周围四个重叠的象限，选其中"最均匀"（方差
+// 最小）的那个，用它的平均色。位于某个色块内部的像素，四个象限都在同色区
+// 里，输出就是那块的平均色 —— 整块被压平；而骑在边界上的像素，跨界的象限
+// 方差大会被淘汰，它只会取到边界某一侧的颜色 —— 边界因此不但没被模糊，反而
+// 被推向"非此即彼"。
+//
+// 这正是拼豆需要的：每个区块内部干净成一片，区块之间界限分明。对莫奈那种
+// 碎笔触尤其有效 —— 一片由几十种蓝紫笔触组成的天空会被压成几块干净的色区，
+// 而不是继续在相邻格子间反复横跳。
+function kuwahara(data, W, H, radius) {
+  const out = new Uint8ClampedArray(data.length);
+  const lum = new Float32Array(W * H);
+  for (let p = 0; p < W * H; p++) {
+    const o = p * 4;
+    lum[p] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+  }
+  // 四个象限相对于中心的范围，彼此重叠一行/一列（都含中心像素）
+  const quads = [[-radius, 0, -radius, 0], [0, radius, -radius, 0],
+                 [-radius, 0, 0, radius], [0, radius, 0, radius]];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let bestVar = Infinity, bR = 0, bG = 0, bB = 0;
+      for (const [dx0, dx1, dy0, dy1] of quads) {
+        let sum = 0, sumSq = 0, r = 0, g = 0, b = 0, n = 0;
+        for (let yy = y + dy0; yy <= y + dy1; yy++) {
           if (yy < 0 || yy >= H) continue;
-          for (let dx = -1; dx <= 1; dx++) {
-            const xx = x + dx;
+          for (let xx = x + dx0; xx <= x + dx1; xx++) {
             if (xx < 0 || xx >= W) continue;
-            const o = (yy * W + xx) * 4;
+            const p = yy * W + xx, o = p * 4;
+            const l = lum[p];
+            sum += l; sumSq += l * l;
             r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
           }
         }
-        const p = (y * W + x) * 3;
-        blur[p] = r / n; blur[p + 1] = g / n; blur[p + 2] = b / n;
+        if (!n) continue;
+        const variance = sumSq / n - (sum / n) * (sum / n);
+        if (variance < bestVar) { bestVar = variance; bR = r / n; bG = g / n; bB = b / n; }
       }
+      const o = (y * W + x) * 4;
+      out[o] = bR; out[o + 1] = bG; out[o + 2] = bB; out[o + 3] = 255;
     }
-    for (let p = 0; p < W * H; p++) {
-      const o = p * 4, q = p * 3;
-      for (let ch = 0; ch < 3; ch++) {
-        out[o + ch] = data[o + ch] + sharpen * (data[o + ch] - blur[q + ch]);
+  }
+  return out;
+}
+
+// 结构增强 + 彩度补偿。都在中间图上做，也就是量化之前 —— 之后再做就只能
+// 加工已经丢失的信息了。
+function enhanceImageData(imageData, structure, vivid) {
+  const { width: W, height: H } = imageData;
+  let data = imageData.data;
+
+  if (structure && structure.radius > 0) {
+    for (let i = 0; i < structure.passes; i++) {
+      // 多跑几遍会让区块越来越"死板"：第一遍压平笔触，后面几遍把相邻的
+      // 相近色区并成同一块，轮廓也越来越硬。
+      data = kuwahara(data, W, H, structure.radius);
+    }
+    if (structure.sharpen > 0) {
+      // 压平之后再做一点点 USM 就安全了 —— 此时高频里已经基本只剩真正的
+      // 边界，噪点在上一步被吃掉了。
+      const blur = new Float32Array(W * H * 3);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            const yy = y + dy;
+            if (yy < 0 || yy >= H) continue;
+            for (let dx = -1; dx <= 1; dx++) {
+              const xx = x + dx;
+              if (xx < 0 || xx >= W) continue;
+              const o = (yy * W + xx) * 4;
+              r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
+            }
+          }
+          const q = (y * W + x) * 3;
+          blur[q] = r / n; blur[q + 1] = g / n; blur[q + 2] = b / n;
+        }
       }
+      const sharp = new Uint8ClampedArray(data);
+      for (let p = 0; p < W * H; p++) {
+        const o = p * 4, q = p * 3;
+        for (let ch = 0; ch < 3; ch++) {
+          sharp[o + ch] = data[o + ch] + structure.sharpen * (data[o + ch] - blur[q + ch]);
+        }
+      }
+      data = sharp;
     }
   }
 
   if (vivid > 1.001) {
+    const out = new Uint8ClampedArray(data);
     for (let p = 0; p < W * H; p++) {
       const o = p * 4;
       const r = out[o], g = out[o + 1], b = out[o + 2];
@@ -511,8 +587,10 @@ function enhanceImageData(imageData, sharpen, vivid) {
       out[o + 1] = gray + (g - gray) * vivid;
       out[o + 2] = gray + (b - gray) * vivid;
     }
+    data = out;
   }
-  return { width: W, height: H, data: out };
+
+  return data === imageData.data ? imageData : { width: W, height: H, data };
 }
 
 fillSlider.addEventListener("input", () => {
@@ -572,15 +650,15 @@ async function regenerate() {
   // 嘈杂，抠图模型/泛洪看到的图也小一圈，边缘因此发毛。所以一律先在 2 倍
   // 分辨率上跑完整套，再把每个 2×2 已定色的格子合并下来。
   const SUPERSAMPLE_BELOW = 60;
-  const superSample = boardSize < SUPERSAMPLE_BELOW;
-  const sourceBoardSize = superSample ? boardSize * 2 : boardSize;
-  const cap = Math.max(200, sourceBoardSize * samplesPerCell);
+  const superSample = Math.max(boardW, boardH) < SUPERSAMPLE_BELOW;
+  const factor = superSample ? 2 : 1;
+  const cap = Math.max(200, Math.max(boardW, boardH) * factor * samplesPerCell);
   const imageData = enhanceImageData(
     prepareIntermediate(sourceImage, cropRect, allowRect, cap),
-    sharpenAmount(),
+    structureSetting(),
     vividAmount()
   );
-  const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, sourceBoardSize, fillRatio);
+  const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, boardW * factor, boardH * factor, fillRatio);
 
   // Simplification level drives BOTH halves of the cartoonify treatment:
   // how many colors the picture may use at all, and how big a patch has to
@@ -652,17 +730,18 @@ async function regenerate() {
   renderUsage(lastPattern);
   updateHighlightInfo();
 
-  if (boardSize !== lastZoomedBoardSize) {
-    lastZoomedBoardSize = boardSize;
+  const shapeKey = `${boardW}x${boardH}`;
+  if (shapeKey !== lastZoomedBoardSize) {
+    lastZoomedBoardSize = shapeKey;
     setZoom((patternWrap.clientWidth - 4) / patternCanvas.width);
   }
 
   const { sorted, total } = countBeads(cells);
   renderStats([
-    ["板子", `${boardSize}×${boardSize}`,
-      boardSize % BOARD_UNIT === 0
-        ? `${boardSize / BOARD_UNIT}×${boardSize / BOARD_UNIT} 块拼板`
-        : `约 ${(boardSize * 0.5).toFixed(0)}cm 见方`],
+    ["板子", `${boardW}×${boardH}`,
+      boardW % BOARD_UNIT === 0 && boardH % BOARD_UNIT === 0
+        ? `${boardW / BOARD_UNIT}×${boardH / BOARD_UNIT} 块拼板`
+        : `约 ${(boardW * 0.5).toFixed(0)}×${(boardH * 0.5).toFixed(0)}cm`],
     ["图案", `${gridW}×${gridH}`, useCutout ? "已抠图" : "格"],
     ["用色", `${sorted.length}`, "种"],
     ["总豆数", `${total}`, "颗"],
@@ -832,19 +911,14 @@ function despeckleIndices(indices, W, H) {
   return out;
 }
 
-// "contain" fit: longer side = boardSize*fillRatio, shorter side keeps aspect ratio
-function computeGrid(srcW, srcH, boardSize, fillRatio) {
-  const maxDim = boardSize * fillRatio;
-  let gridW, gridH;
-  if (srcW >= srcH) {
-    gridW = Math.max(1, Math.round(maxDim));
-    gridH = Math.max(1, Math.round((maxDim * srcH) / srcW));
-  } else {
-    gridH = Math.max(1, Math.round(maxDim));
-    gridW = Math.max(1, Math.round((maxDim * srcW) / srcH));
-  }
-  gridW = Math.min(gridW, boardSize);
-  gridH = Math.min(gridH, boardSize);
+// "contain" 装箱：在 bw×bh 的板子里尽量放大，保持画面比例不变形。
+// 板子本身可以不是正方形，所以要按两个方向各自能放多少来取较小的那个缩放比。
+function computeGrid(srcW, srcH, bw, bh, fillRatio) {
+  const scale = Math.min((bw * fillRatio) / srcW, (bh * fillRatio) / srcH);
+  let gridW = Math.max(1, Math.round(srcW * scale));
+  let gridH = Math.max(1, Math.round(srcH * scale));
+  gridW = Math.min(gridW, bw);
+  gridH = Math.min(gridH, bh);
   return { gridW, gridH };
 }
 
@@ -1342,24 +1416,21 @@ function centeredLines(size, step) {
   return lines;
 }
 
-function guideMargin(size) {
-  return (size - Math.floor(size / 10) * 10) / 2;
-}
-
-function drawGuides(ctx, size, gutter) {
-  const boardPx = size * CELL_PX;
-  const margin = guideMargin(size);
+function drawGuides(ctx, bw, bh, gutter) {
+  const pxW = bw * CELL_PX, pxH = bh * CELL_PX;
 
   ctx.strokeStyle = "rgba(30,30,40,0.55)";
   ctx.lineWidth = 2;
-  for (const i of centeredLines(size, 10)) {
+  for (const i of centeredLines(bw, 10)) {
     ctx.beginPath();
     ctx.moveTo(gutter + i * CELL_PX, gutter);
-    ctx.lineTo(gutter + i * CELL_PX, gutter + boardPx);
+    ctx.lineTo(gutter + i * CELL_PX, gutter + pxH);
     ctx.stroke();
+  }
+  for (const i of centeredLines(bh, 10)) {
     ctx.beginPath();
     ctx.moveTo(gutter, gutter + i * CELL_PX);
-    ctx.lineTo(gutter + boardPx, gutter + i * CELL_PX);
+    ctx.lineTo(gutter + pxW, gutter + i * CELL_PX);
     ctx.stroke();
   }
 
@@ -1370,26 +1441,30 @@ function drawGuides(ctx, size, gutter) {
   ctx.font = `600 ${Math.round(CELL_PX * 0.46)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  const marks = new Set([1, size]);
-  for (let n = 10; n <= size; n += 10) marks.add(n);
-  for (const n of marks) {
-    const center = gutter + (n - 0.5) * CELL_PX;
-    ctx.fillText(String(n), center, gutter / 2);
+  const marksFor = (n) => {
+    const set = new Set([1, n]);
+    for (let i = 10; i <= n; i += 10) set.add(i);
+    return set;
+  };
+  for (const n of marksFor(bw)) {
+    ctx.fillText(String(n), gutter + (n - 0.5) * CELL_PX, gutter / 2);
+  }
+  for (const n of marksFor(bh)) {
     ctx.save();
-    ctx.translate(gutter / 2, center);
+    ctx.translate(gutter / 2, gutter + (n - 0.5) * CELL_PX);
     ctx.fillText(String(n), 0, 0);
     ctx.restore();
   }
 }
 
 function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false) {
-  const size = boardSize;
+  const bw = boardW, bh = boardH;
   const gutter = GUTTER_PX;
-  const boardPx = size * CELL_PX;
+  const boardPxW = bw * CELL_PX, boardPxH = bh * CELL_PX;
   const legend = withLegend ? countBeads(cells) : null;
-  const legendH = legend ? legendHeight(legend.sorted.length, boardPx + gutter) : 0;
-  canvas.width = boardPx + gutter;
-  canvas.height = boardPx + gutter + legendH;
+  const legendH = legend ? legendHeight(legend.sorted.length, boardPxW + gutter) : 0;
+  canvas.width = boardPxW + gutter;
+  canvas.height = boardPxH + gutter + legendH;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -1397,7 +1472,7 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
   // everything board-related is drawn translated by it. Legend drawing
   // restores the identity transform first (see below).
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, boardPx + gutter);
+  ctx.fillRect(0, 0, canvas.width, boardPxH + gutter);
   ctx.save();
   ctx.translate(gutter, gutter);
 
@@ -1405,18 +1480,18 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
   // size, not the whole canvas — the gutter and the legend strip below paint
   // their own backgrounds and must not be covered by this.
   ctx.fillStyle = "#f0ede7";
-  ctx.fillRect(0, 0, boardPx, boardPx);
+  ctx.fillRect(0, 0, boardPxW, boardPxH);
   ctx.fillStyle = "#c9c2b4";
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
       ctx.beginPath();
       ctx.arc(x * CELL_PX + CELL_PX / 2, y * CELL_PX + CELL_PX / 2, CELL_PX * 0.14, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  const offsetX = Math.floor((size - gridW) / 2);
-  const offsetY = Math.floor((size - gridH) / 2);
+  const offsetX = Math.floor((bw - gridW) / 2);
+  const offsetY = Math.floor((bh - gridH) / 2);
 
   ctx.font = `bold ${Math.round(CELL_PX * 0.36)}px sans-serif`;
   ctx.textAlign = "center";
@@ -1467,36 +1542,28 @@ function drawPatternToCanvas(canvas, { gridW, gridH, cells }, withLegend = false
   // fine grid lines
   ctx.strokeStyle = "rgba(0,0,0,0.12)";
   ctx.lineWidth = 1;
-  for (let i = 0; i <= size; i++) {
-    ctx.beginPath();
-    ctx.moveTo(i * CELL_PX, 0);
-    ctx.lineTo(i * CELL_PX, size * CELL_PX);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, i * CELL_PX);
-    ctx.lineTo(size * CELL_PX, i * CELL_PX);
-    ctx.stroke();
+  for (let i = 0; i <= bw; i++) {
+    ctx.beginPath(); ctx.moveTo(i * CELL_PX, 0); ctx.lineTo(i * CELL_PX, boardPxH); ctx.stroke();
+  }
+  for (let i = 0; i <= bh; i++) {
+    ctx.beginPath(); ctx.moveTo(0, i * CELL_PX); ctx.lineTo(boardPxW, i * CELL_PX); ctx.stroke();
   }
   // 拼接缝：每 26 格是一块实体拼豆板的边界。尺寸不是 26 整数倍时（比如 40）
   // 把这些线居中摆 —— 你手上的板子还是 26 格的，只是拼不满，剩下的零头分在
   // 两边。从边上开始排会让零头全堆在一侧，跟实际怎么拼对不上。
   ctx.strokeStyle = "rgba(150,140,120,0.7)";
   ctx.lineWidth = 1.5;
-  for (const i of centeredLines(size, BOARD_UNIT)) {
-    ctx.beginPath();
-    ctx.moveTo(i * CELL_PX, 0);
-    ctx.lineTo(i * CELL_PX, boardPx);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, i * CELL_PX);
-    ctx.lineTo(boardPx, i * CELL_PX);
-    ctx.stroke();
+  for (const i of centeredLines(bw, BOARD_UNIT)) {
+    ctx.beginPath(); ctx.moveTo(i * CELL_PX, 0); ctx.lineTo(i * CELL_PX, boardPxH); ctx.stroke();
+  }
+  for (const i of centeredLines(bh, BOARD_UNIT)) {
+    ctx.beginPath(); ctx.moveTo(0, i * CELL_PX); ctx.lineTo(boardPxW, i * CELL_PX); ctx.stroke();
   }
 
   ctx.restore(); // back to canvas coords; guides draw their own gutter offset
-  drawGuides(ctx, size, gutter);
+  drawGuides(ctx, bw, bh, gutter);
 
-  if (legend) drawLegend(ctx, legend, boardPx + gutter, canvas.width);
+  if (legend) drawLegend(ctx, legend, boardPxH + gutter, canvas.width);
 }
 
 // ---------- Bead-count legend (drawn under the board) ----------
@@ -1735,7 +1802,7 @@ function deductCurrentPattern() {
     : "";
   if (!window.confirm(`从库存中扣除这张图纸的用量？\n${sorted.length} 色 / ${total} 颗。${warn}`)) return;
 
-  const entry = { at: Date.now(), board: boardSize, total, items: {} };
+  const entry = { at: Date.now(), board: `${boardW}x${boardH}`, total, items: {} };
   for (const [code, { count }] of sorted) {
     const have = stockOf(code);
     entry.items[code] = Math.min(have, count); // record what was actually taken
@@ -2265,8 +2332,8 @@ function patternCellFromEvent(evt, canvasEl, clampToGrid = false) {
   // Subtract the number gutter: the board no longer starts at canvas 0,0.
   const px = ((evt.clientX - rect.left) * canvasEl.width) / rect.width - GUTTER_PX;
   const py = ((evt.clientY - rect.top) * canvasEl.height) / rect.height - GUTTER_PX;
-  const offsetX = Math.floor((boardSize - lastPattern.gridW) / 2);
-  const offsetY = Math.floor((boardSize - lastPattern.gridH) / 2);
+  const offsetX = Math.floor((boardW - lastPattern.gridW) / 2);
+  const offsetY = Math.floor((boardH - lastPattern.gridH) / 2);
   let gx = Math.floor(px / CELL_PX) - offsetX;
   let gy = Math.floor(py / CELL_PX) - offsetY;
   if (clampToGrid) {
@@ -2370,8 +2437,8 @@ bindPatternSelect(editorPatternCanvas, () => {
 function drawSelectionOverlay(canvasEl, sel) {
   if (!lastPattern || !sel || !sel.size) return;
   const ctx = canvasEl.getContext("2d");
-  const offsetX = Math.floor((boardSize - lastPattern.gridW) / 2);
-  const offsetY = Math.floor((boardSize - lastPattern.gridH) / 2);
+  const offsetX = Math.floor((boardW - lastPattern.gridW) / 2);
+  const offsetY = Math.floor((boardH - lastPattern.gridH) / 2);
   const px = (gx) => GUTTER_PX + (offsetX + gx) * CELL_PX;
   const py = (gy) => GUTTER_PX + (offsetY + gy) * CELL_PX;
 
@@ -2738,7 +2805,7 @@ exportPngBtn.addEventListener("click", () => {
   renderPattern(lastPattern);
 
   const a = document.createElement("a");
-  a.download = `拼豆图纸_${boardSize}x${boardSize}.png`;
+  a.download = `拼豆图纸_${boardW}x${boardH}.png`;
   a.href = url;
   a.click();
 });
@@ -2752,7 +2819,7 @@ exportCsvBtn.addEventListener("click", () => {
 
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
-  a.download = `用豆清单_${boardSize}x${boardSize}.csv`;
+  a.download = `用豆清单_${boardW}x${boardH}.csv`;
   a.href = URL.createObjectURL(blob);
   a.click();
 });

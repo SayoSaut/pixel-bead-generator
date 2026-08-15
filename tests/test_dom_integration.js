@@ -27,7 +27,7 @@ const { window } = dom; const d = window.document;
 const main = d.getElementById("pattern-canvas");
 const editor = d.getElementById("cell-editor");
 window.eval(`
-  boardSize = 52; sourceImage = {};
+  boardW = boardH = boardSize = 52; sourceImage = {};
   const _c = Array.from({length:6}, () => Array.from({length:6}, () => MARD_PALETTE[0]));
   lastPattern = { gridW: 6, gridH: 6, cells: _c };
   renderPattern(lastPattern);

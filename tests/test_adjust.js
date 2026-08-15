@@ -17,7 +17,7 @@ const dom = new JSDOM(html, { runScripts: "dangerously", pretendToBeVisual: true
 const { window } = dom, d = window.document;
 
 window.eval(`
-  boardSize = 52; sourceImage = {};
+  boardW = boardH = boardSize = 52; sourceImage = {};
   const A = MARD_PALETTE.find(e => e.code === "A1");
   const B = MARD_PALETTE.find(e => e.code === "B12");
   lastPattern = { gridW: 2, gridH: 2, cells: [[A, A], [B, A]] };

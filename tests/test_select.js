@@ -7,7 +7,7 @@ const byCode = Object.fromEntries(P.map((e) => [e.code, e]));
 vm.runInContext("globalThis.__set=(n,v)=>{eval(n+' = v')}; globalThis.__get=(n)=>eval(n);", ctx);
 const set = run("__set");
 
-run("boardSize = 52");
+run("boardW = boardH = boardSize = 52");
 const gridW = 6, gridH = 5;
 const cells = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => byCode.A1));
 set("lastPattern", { gridW, gridH, cells });
