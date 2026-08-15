@@ -778,6 +778,41 @@ tbody tr:hover { background: var(--bg); }
   .pattern-wrap { max-height: none; overflow: visible; border: none; }
 }
 
+/* ---------- Inventory: bulk fill + sync state ---------- */
+
+.inv-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.inv-section:first-of-type { border-top: none; padding-top: 0; }
+
+.inv-bulk { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.inv-bulk input {
+  width: 96px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.inv-bulk input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+.sync-where {
+  font-size: 12.5px;
+  line-height: 1.55;
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  margin-bottom: 10px;
+}
+.sync-where.is-local { background: var(--bg); border: 1px solid var(--border); color: var(--ink-2); }
+.sync-where.is-cloud { background: #eefaf1; border: 1px solid #bfe6cc; color: #1d6b3a; }
+
+.sync-intro { background: var(--bg); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px; }
+.sync-intro .hint:last-child { margin-bottom: 0; }
+
 </style>
 </head>
 <body>
@@ -943,40 +978,67 @@ tbody tr:hover { background: var(--bg); }
         <h2>豆子库存</h2>
         <button id="inventory-close" class="btn-ghost">关闭</button>
       </div>
-      <p class="hint">记录你手上每个色号还有多少颗。数据只存在这台电脑的浏览器里，建议偶尔导出备份。</p>
-      <div class="inv-tools">
-        <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
-        <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
-        <button id="inventory-export" class="btn-ghost">导出 CSV</button>
-        <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
-        <button id="inventory-clear" class="btn-ghost danger">清空</button>
+      <p class="hint">记录你手上每个色号还有多少颗。</p>
+
+      <div class="inv-section">
+        <span class="sub-title">批量填数字</span>
+        <div class="inv-bulk">
+          <input type="number" id="inventory-bulk-value" min="0" step="1" value="500" aria-label="批量数量" />
+          <button id="inventory-bulk-set" class="btn-ghost">全部设为</button>
+          <button id="inventory-bulk-add" class="btn-ghost">全部各加</button>
+          <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
+        </div>
+        <p class="hint" id="inventory-bulk-scope">作用范围：下方列出的色号</p>
       </div>
+
+      <div class="inv-section">
+        <div class="inv-tools">
+          <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
+          <button id="inventory-export" class="btn-ghost">导出 CSV 备份</button>
+          <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
+          <button id="inventory-clear" class="btn-ghost danger">清空</button>
+        </div>
+      </div>
+
       <div class="inv-list" id="inventory-list"></div>
 
-      <details class="sync-box">
-        <summary>跨设备同步（可选）</summary>
-        <p class="hint">
-          填上自建的同步服务器后，库存会存到云端，换电脑/手机也能接着用。
-          不填就只存在这台设备的浏览器里。部署方法见仓库里的 <code>worker/</code>。
-        </p>
-        <div class="sync-form">
-          <label>服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
-          <label>共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
-          <label>档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
-        </div>
-        <label class="switch sync-auto-row">
-          <input type="checkbox" id="sync-auto" />
-          <span class="switch-track"><span class="switch-thumb"></span></span>
-          <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
-        </label>
-        <div class="inv-tools">
-          <button id="sync-save" class="btn-ghost">保存设置</button>
-          <button id="sync-pull" class="btn-ghost">从云端拉取</button>
-          <button id="sync-push" class="btn-ghost">上传到云端</button>
-        </div>
-        <div class="sync-status" id="sync-status" hidden></div>
-        <p class="hint">口令只保存在你自己的浏览器里，不会进代码仓库。拿到口令的人可以读写所有档案，所以只发给信得过的人。</p>
-      </details>
+      <div class="inv-section sync-box">
+        <span class="sub-title">数据存在哪里</span>
+        <div class="sync-where" id="sync-where"></div>
+
+        <details id="sync-details">
+          <summary>设置跨设备同步</summary>
+          <div class="sync-intro">
+            <p class="hint">
+              <strong>这一步需要先自己部署一个同步服务器</strong>，只需一次，之后所有设备都用它。
+              没有服务器就没有可连的东西 —— 库存会一直只存在这台设备上（那样也完全能用）。
+            </p>
+            <p class="hint">
+              部署方法在仓库的 <code>worker/README.md</code>：在 Cloudflare 控制台新建一个 Worker，
+              把 <code>worker/src/index.js</code> 粘进去，绑定一个 KV、设好口令，拿到一个
+              <code>https://xxx.workers.dev</code> 地址。免费额度内不花钱。
+            </p>
+          </div>
+          <div class="sync-form">
+            <label>① 服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
+            <label>② 共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
+            <label>③ 你的档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
+          </div>
+          <p class="hint">几个人共用一个服务器和口令，各自填不同的档案名，数据就各存各的。</p>
+          <label class="switch sync-auto-row">
+            <input type="checkbox" id="sync-auto" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
+          </label>
+          <div class="inv-tools">
+            <button id="sync-save" class="btn-ghost">保存并测试连接</button>
+            <button id="sync-pull" class="btn-ghost">从云端拉取</button>
+            <button id="sync-push" class="btn-ghost">上传到云端</button>
+          </div>
+          <div class="sync-status" id="sync-status" hidden></div>
+          <p class="hint">口令只存在你自己的浏览器里，不会进代码仓库。拿到口令的人能读写所有档案，所以只发给信得过的人。</p>
+        </details>
+      </div>
     </div>
   </section>
 
@@ -2767,6 +2829,8 @@ function inventoryRows() {
 
 function renderInventoryEditor() {
   if (!inventoryList) return;
+  updateBulkScope();
+  updateSyncWhere();
   const rows = inventoryRows();
   inventoryList.innerHTML = "";
   if (!rows.length) {
@@ -2807,8 +2871,45 @@ if (inventoryFilter) {
   inventoryFilter.addEventListener("click", () => {
     inventoryShowAll = !inventoryShowAll;
     inventoryFilter.textContent = inventoryShowAll ? "只显示相关色号" : "显示全部色号";
-    renderInventoryEditor();
+    renderInventoryEditor(); // 内部会刷新「作用范围」说明
+
   });
+}
+
+// ---------- Bulk fill ----------
+// Beads are bought by the bag, not by the bead: "I have roughly 500 of
+// everything" is the normal starting state, and expressing it by typing 500
+// into 291 boxes is absurd. Both actions apply to exactly the rows currently
+// listed, so the 「显示全部色号」 toggle doubles as the scope selector — that
+// way "set all" can mean either "everything this pattern needs" or "my whole
+// collection" without needing a second control.
+function bulkValue() {
+  const input = document.getElementById("inventory-bulk-value");
+  const n = Math.max(0, Math.floor(Number(input && input.value)));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function applyBulk(mode) {
+  const rows = inventoryRows();
+  if (!rows.length) return;
+  const n = bulkValue();
+  const verb = mode === "set" ? "设为" : "各加";
+  if (!window.confirm(`把下面列出的 ${rows.length} 个色号全部${verb} ${n} 颗？`)) return;
+  for (const { code, have } of rows) setStock(code, mode === "set" ? n : have + n);
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+}
+
+bindIfPresent("inventory-bulk-set", "click", () => applyBulk("set"));
+bindIfPresent("inventory-bulk-add", "click", () => applyBulk("add"));
+
+function updateBulkScope() {
+  const box = document.getElementById("inventory-bulk-scope");
+  if (!box) return;
+  const n = inventoryRows().length;
+  box.textContent = inventoryShowAll
+    ? `作用范围：全部 ${n} 个色号（当前色卡）`
+    : `作用范围：下方列出的 ${n} 个色号（这张图用到的 + 已登记的）。想覆盖所有颜色，先点「显示全部色号」。`;
 }
 
 // Fill in exactly what the current pattern is missing — the common case is
@@ -2928,7 +3029,32 @@ function scheduleSyncPush() {
   syncTimer = setTimeout(syncPush, 2500);
 }
 
-bindIfPresent("sync-save", "click", () => {
+// A one-line answer to "where is my data right now", always visible. The
+// previous version showed three empty fields and no state, so there was no
+// way to tell "not set up" apart from "set up but broken".
+function updateSyncWhere() {
+  const box = document.getElementById("sync-where");
+  if (!box) return;
+  if (!syncReady()) {
+    box.className = "sync-where is-local";
+    box.innerHTML =
+      `<strong>只存在这台设备</strong>浏览器里（未连接同步服务器）。` +
+      `换设备或清理浏览器数据会丢，建议用上面的「导出 CSV 备份」。`;
+    return;
+  }
+  let host = syncConfig.url;
+  try { host = new URL(syncConfig.url).host; } catch (e) { /* 地址还没填对，就照原样显示 */ }
+  box.className = "sync-where is-cloud";
+  box.innerHTML =
+    `已连接 <strong>${host}</strong> · 档案「<strong>${syncConfig.profile}</strong>」` +
+    `${syncConfig.autoPush ? " · 改动后自动上传" : " · 需手动点上传"}`;
+}
+
+// Saving also verifies, because "saved" on its own tells you nothing about
+// whether the address and passcode are actually right — and a silent
+// mis-configuration here looks identical to working until the day you switch
+// devices and find nothing there.
+bindIfPresent("sync-save", "click", async () => {
   syncConfig = {
     url: (syncUrlInput.value || "").trim(),
     passcode: (syncPassInput.value || "").trim(),
@@ -2936,10 +3062,32 @@ bindIfPresent("sync-save", "click", () => {
     autoPush: document.getElementById("sync-auto").checked,
   };
   saveStored(SYNC_KEY, syncConfig);
-  setSyncStatus(syncReady() ? "已保存同步设置" : "还缺信息：地址、口令、档案名都要填", syncReady() ? "ok" : "error");
+  updateSyncWhere();
+  if (!syncReady()) {
+    setSyncStatus("三样都要填：服务器地址、口令、档案名。", "error");
+    return;
+  }
+  setSyncStatus("正在测试连接…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    const n = Object.keys(data.inventory || {}).length;
+    setSyncStatus(
+      n
+        ? `连接成功。云端档案「${syncConfig.profile}」已有 ${n} 个色号 —— 点「从云端拉取」取回，或点「上传到云端」用本机数据覆盖它。`
+        : `连接成功。云端档案「${syncConfig.profile}」还是空的 —— 点「上传到云端」把本机库存存上去。`,
+      "ok"
+    );
+  } catch (err) {
+    setSyncStatus(
+      "连不上：" + err.message +
+      "（检查地址是否完整、口令是否正确，以及服务器的 ALLOWED_ORIGIN 是否填了这个网站的地址）",
+      "error"
+    );
+  }
 });
 bindIfPresent("sync-pull", "click", syncPull);
 bindIfPresent("sync-push", "click", syncPush);
+updateSyncWhere();
 
 function restoreSyncForm() {
   if (!syncUrlInput) return;

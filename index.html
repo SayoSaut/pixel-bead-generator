@@ -169,40 +169,67 @@
         <h2>豆子库存</h2>
         <button id="inventory-close" class="btn-ghost">关闭</button>
       </div>
-      <p class="hint">记录你手上每个色号还有多少颗。数据只存在这台电脑的浏览器里，建议偶尔导出备份。</p>
-      <div class="inv-tools">
-        <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
-        <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
-        <button id="inventory-export" class="btn-ghost">导出 CSV</button>
-        <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
-        <button id="inventory-clear" class="btn-ghost danger">清空</button>
+      <p class="hint">记录你手上每个色号还有多少颗。</p>
+
+      <div class="inv-section">
+        <span class="sub-title">批量填数字</span>
+        <div class="inv-bulk">
+          <input type="number" id="inventory-bulk-value" min="0" step="1" value="500" aria-label="批量数量" />
+          <button id="inventory-bulk-set" class="btn-ghost">全部设为</button>
+          <button id="inventory-bulk-add" class="btn-ghost">全部各加</button>
+          <button id="inventory-fill" class="btn-ghost">按当前图纸补齐</button>
+        </div>
+        <p class="hint" id="inventory-bulk-scope">作用范围：下方列出的色号</p>
       </div>
+
+      <div class="inv-section">
+        <div class="inv-tools">
+          <button id="inventory-filter" class="btn-ghost">显示全部色号</button>
+          <button id="inventory-export" class="btn-ghost">导出 CSV 备份</button>
+          <label class="btn-ghost file-btn">导入 CSV<input type="file" id="inventory-import" accept=".csv,text/csv" /></label>
+          <button id="inventory-clear" class="btn-ghost danger">清空</button>
+        </div>
+      </div>
+
       <div class="inv-list" id="inventory-list"></div>
 
-      <details class="sync-box">
-        <summary>跨设备同步（可选）</summary>
-        <p class="hint">
-          填上自建的同步服务器后，库存会存到云端，换电脑/手机也能接着用。
-          不填就只存在这台设备的浏览器里。部署方法见仓库里的 <code>worker/</code>。
-        </p>
-        <div class="sync-form">
-          <label>服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
-          <label>共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
-          <label>档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
-        </div>
-        <label class="switch sync-auto-row">
-          <input type="checkbox" id="sync-auto" />
-          <span class="switch-track"><span class="switch-thumb"></span></span>
-          <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
-        </label>
-        <div class="inv-tools">
-          <button id="sync-save" class="btn-ghost">保存设置</button>
-          <button id="sync-pull" class="btn-ghost">从云端拉取</button>
-          <button id="sync-push" class="btn-ghost">上传到云端</button>
-        </div>
-        <div class="sync-status" id="sync-status" hidden></div>
-        <p class="hint">口令只保存在你自己的浏览器里，不会进代码仓库。拿到口令的人可以读写所有档案，所以只发给信得过的人。</p>
-      </details>
+      <div class="inv-section sync-box">
+        <span class="sub-title">数据存在哪里</span>
+        <div class="sync-where" id="sync-where"></div>
+
+        <details id="sync-details">
+          <summary>设置跨设备同步</summary>
+          <div class="sync-intro">
+            <p class="hint">
+              <strong>这一步需要先自己部署一个同步服务器</strong>，只需一次，之后所有设备都用它。
+              没有服务器就没有可连的东西 —— 库存会一直只存在这台设备上（那样也完全能用）。
+            </p>
+            <p class="hint">
+              部署方法在仓库的 <code>worker/README.md</code>：在 Cloudflare 控制台新建一个 Worker，
+              把 <code>worker/src/index.js</code> 粘进去，绑定一个 KV、设好口令，拿到一个
+              <code>https://xxx.workers.dev</code> 地址。免费额度内不花钱。
+            </p>
+          </div>
+          <div class="sync-form">
+            <label>① 服务器地址<input type="url" id="sync-url" placeholder="https://xxx.workers.dev" /></label>
+            <label>② 共享口令<input type="password" id="sync-passcode" placeholder="部署时设置的 PASSCODE" /></label>
+            <label>③ 你的档案名<input type="text" id="sync-profile" placeholder="比如：小李" maxlength="24" /></label>
+          </div>
+          <p class="hint">几个人共用一个服务器和口令，各自填不同的档案名，数据就各存各的。</p>
+          <label class="switch sync-auto-row">
+            <input type="checkbox" id="sync-auto" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">改动后自动上传<em>合并 2.5 秒内的连续改动，省写入次数</em></span>
+          </label>
+          <div class="inv-tools">
+            <button id="sync-save" class="btn-ghost">保存并测试连接</button>
+            <button id="sync-pull" class="btn-ghost">从云端拉取</button>
+            <button id="sync-push" class="btn-ghost">上传到云端</button>
+          </div>
+          <div class="sync-status" id="sync-status" hidden></div>
+          <p class="hint">口令只存在你自己的浏览器里，不会进代码仓库。拿到口令的人能读写所有档案，所以只发给信得过的人。</p>
+        </details>
+      </div>
     </div>
   </section>
 

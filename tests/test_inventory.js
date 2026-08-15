@@ -81,3 +81,66 @@ assert.deepStrictEqual(exportable, ["A1"], "导入时应过滤掉不存在的色
 console.log("PASS 未知色号不会被当作有效库存");
 
 console.log("\nALL INVENTORY TESTS PASSED");
+
+// --- 批量填数字 ---
+{
+  const A = byCode.A1, B = byCode.B12;
+  const g = [[A, A, B], [A, B, B]];
+  set("boardSize", 52);
+  set("lastPattern", { gridW: 3, gridH: 2, cells: g });
+  set("inventory", { A1: 10, C4: 999 });        // C4 不在图纸里，但已登记
+  set("inventoryShowAll", false);
+  set("window", { addEventListener() {}, confirm: () => true, alert: () => {} });
+
+  const rows = run("inventoryRows")().map((r) => r.code).sort();
+  assert.strictEqual(JSON.stringify([...rows]), JSON.stringify(["A1","B12","C4"]), "默认范围 = 图纸用到的 + 已登记的，实际 " + rows);
+  console.log("PASS 批量范围：默认只覆盖相关色号 →", rows.join(","));
+
+  const bulkInput = run("document").getElementById("inventory-bulk-value");
+  bulkInput.value = "500";
+  run("applyBulk")("set");
+  for (const c of rows) assert.strictEqual(stockOf(c), 500, c + " 应被设为 500");
+  console.log("PASS 全部设为 500：列出的 3 个色号统一改成同一个数");
+
+  bulkInput.value = "20";
+  run("applyBulk")("add");
+  for (const c of rows) assert.strictEqual(stockOf(c), 520, c + " 应在原值上 +20");
+  console.log("PASS 全部各加 20：在原有数量上累加（500 → 520），不是覆盖");
+
+  // 「各加」必须尊重各自的原值，而不是把大家拉平
+  set("inventory", { A1: 10, B12: 3, C4: 5 });
+  bulkInput.value = "7";
+  run("applyBulk")("add");
+  assert.strictEqual(stockOf("A1"), 17);
+  assert.strictEqual(stockOf("B12"), 10);
+  assert.strictEqual(stockOf("C4"), 12);
+  console.log("PASS 各加保留差异：10/3/5 各加 7 → 17/10/12");
+
+  // 取消确认对话框不应改动
+  set("inventory", { A1: 42 });
+  set("window", { addEventListener() {}, confirm: () => false, alert: () => {} });
+  run("applyBulk")("set");
+  assert.strictEqual(stockOf("A1"), 42, "取消确认后不应改动");
+  console.log("PASS 批量操作带确认，取消则不动数据");
+}
+
+// --- 同步配置状态 ---
+{
+  set("syncConfig", { url: "", passcode: "", profile: "" });
+  assert.strictEqual(run("syncReady")(), false, "缺信息时不应认为已连接");
+  set("syncConfig", { url: "https://x.workers.dev", passcode: "p", profile: "" });
+  assert.strictEqual(run("syncReady")(), false, "少了档案名也不算就绪");
+  set("syncConfig", { url: "https://x.workers.dev", passcode: "p", profile: "小李" });
+  assert.strictEqual(run("syncReady")(), true);
+  console.log("PASS syncReady：三样齐全才算已连接");
+
+  // 没连服务器时，自动上传不应被触发（否则会报一堆错）
+  let called = 0;
+  set("syncConfig", { url: "", passcode: "", profile: "", autoPush: true });
+  set("syncPush", () => { called++; });
+  run("scheduleSyncPush")();
+  assert.strictEqual(called, 0, "未配置时不应尝试上传");
+  console.log("PASS 未配置同步时，改库存不会去连网");
+}
+
+console.log("\nALL INVENTORY TESTS PASSED (含批量与同步状态)");

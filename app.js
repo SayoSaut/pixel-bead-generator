@@ -1605,6 +1605,8 @@ function inventoryRows() {
 
 function renderInventoryEditor() {
   if (!inventoryList) return;
+  updateBulkScope();
+  updateSyncWhere();
   const rows = inventoryRows();
   inventoryList.innerHTML = "";
   if (!rows.length) {
@@ -1645,8 +1647,45 @@ if (inventoryFilter) {
   inventoryFilter.addEventListener("click", () => {
     inventoryShowAll = !inventoryShowAll;
     inventoryFilter.textContent = inventoryShowAll ? "只显示相关色号" : "显示全部色号";
-    renderInventoryEditor();
+    renderInventoryEditor(); // 内部会刷新「作用范围」说明
+
   });
+}
+
+// ---------- Bulk fill ----------
+// Beads are bought by the bag, not by the bead: "I have roughly 500 of
+// everything" is the normal starting state, and expressing it by typing 500
+// into 291 boxes is absurd. Both actions apply to exactly the rows currently
+// listed, so the 「显示全部色号」 toggle doubles as the scope selector — that
+// way "set all" can mean either "everything this pattern needs" or "my whole
+// collection" without needing a second control.
+function bulkValue() {
+  const input = document.getElementById("inventory-bulk-value");
+  const n = Math.max(0, Math.floor(Number(input && input.value)));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function applyBulk(mode) {
+  const rows = inventoryRows();
+  if (!rows.length) return;
+  const n = bulkValue();
+  const verb = mode === "set" ? "设为" : "各加";
+  if (!window.confirm(`把下面列出的 ${rows.length} 个色号全部${verb} ${n} 颗？`)) return;
+  for (const { code, have } of rows) setStock(code, mode === "set" ? n : have + n);
+  if (lastPattern) renderUsage(lastPattern);
+  renderInventoryEditor();
+}
+
+bindIfPresent("inventory-bulk-set", "click", () => applyBulk("set"));
+bindIfPresent("inventory-bulk-add", "click", () => applyBulk("add"));
+
+function updateBulkScope() {
+  const box = document.getElementById("inventory-bulk-scope");
+  if (!box) return;
+  const n = inventoryRows().length;
+  box.textContent = inventoryShowAll
+    ? `作用范围：全部 ${n} 个色号（当前色卡）`
+    : `作用范围：下方列出的 ${n} 个色号（这张图用到的 + 已登记的）。想覆盖所有颜色，先点「显示全部色号」。`;
 }
 
 // Fill in exactly what the current pattern is missing — the common case is
@@ -1766,7 +1805,32 @@ function scheduleSyncPush() {
   syncTimer = setTimeout(syncPush, 2500);
 }
 
-bindIfPresent("sync-save", "click", () => {
+// A one-line answer to "where is my data right now", always visible. The
+// previous version showed three empty fields and no state, so there was no
+// way to tell "not set up" apart from "set up but broken".
+function updateSyncWhere() {
+  const box = document.getElementById("sync-where");
+  if (!box) return;
+  if (!syncReady()) {
+    box.className = "sync-where is-local";
+    box.innerHTML =
+      `<strong>只存在这台设备</strong>浏览器里（未连接同步服务器）。` +
+      `换设备或清理浏览器数据会丢，建议用上面的「导出 CSV 备份」。`;
+    return;
+  }
+  let host = syncConfig.url;
+  try { host = new URL(syncConfig.url).host; } catch (e) { /* 地址还没填对，就照原样显示 */ }
+  box.className = "sync-where is-cloud";
+  box.innerHTML =
+    `已连接 <strong>${host}</strong> · 档案「<strong>${syncConfig.profile}</strong>」` +
+    `${syncConfig.autoPush ? " · 改动后自动上传" : " · 需手动点上传"}`;
+}
+
+// Saving also verifies, because "saved" on its own tells you nothing about
+// whether the address and passcode are actually right — and a silent
+// mis-configuration here looks identical to working until the day you switch
+// devices and find nothing there.
+bindIfPresent("sync-save", "click", async () => {
   syncConfig = {
     url: (syncUrlInput.value || "").trim(),
     passcode: (syncPassInput.value || "").trim(),
@@ -1774,10 +1838,32 @@ bindIfPresent("sync-save", "click", () => {
     autoPush: document.getElementById("sync-auto").checked,
   };
   saveStored(SYNC_KEY, syncConfig);
-  setSyncStatus(syncReady() ? "已保存同步设置" : "还缺信息：地址、口令、档案名都要填", syncReady() ? "ok" : "error");
+  updateSyncWhere();
+  if (!syncReady()) {
+    setSyncStatus("三样都要填：服务器地址、口令、档案名。", "error");
+    return;
+  }
+  setSyncStatus("正在测试连接…");
+  try {
+    const data = await syncRequest("/api/inventory?profile=" + encodeURIComponent(syncConfig.profile));
+    const n = Object.keys(data.inventory || {}).length;
+    setSyncStatus(
+      n
+        ? `连接成功。云端档案「${syncConfig.profile}」已有 ${n} 个色号 —— 点「从云端拉取」取回，或点「上传到云端」用本机数据覆盖它。`
+        : `连接成功。云端档案「${syncConfig.profile}」还是空的 —— 点「上传到云端」把本机库存存上去。`,
+      "ok"
+    );
+  } catch (err) {
+    setSyncStatus(
+      "连不上：" + err.message +
+      "（检查地址是否完整、口令是否正确，以及服务器的 ALLOWED_ORIGIN 是否填了这个网站的地址）",
+      "error"
+    );
+  }
 });
 bindIfPresent("sync-pull", "click", syncPull);
 bindIfPresent("sync-push", "click", syncPush);
+updateSyncWhere();
 
 function restoreSyncForm() {
   if (!syncUrlInput) return;
