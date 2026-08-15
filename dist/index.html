@@ -966,8 +966,13 @@ tbody tr:hover { background: var(--bg); }
       </div>
 
       <div class="control-group">
-        <div class="step"><span class="step-num">4</span><label for="simplify-slider">简化程度</label></div>
-        <p class="hint">合并相近颜色、清掉零星单颗豆，让天空水面这类区域成为整片纯色。</p>
+        <div class="step"><span class="step-num">4</span><label for="simplify-slider">画面风格</label></div>
+        <div class="seg" id="style-presets">
+          <button class="seg-btn style-btn" data-style="faithful">忠实<em>照片、像素图</em></button>
+          <button class="seg-btn style-btn" data-style="illustration">插画<em>油画、厚涂</em></button>
+          <button class="seg-btn style-btn" data-style="poster">海报<em>大色块、强对比</em></button>
+        </div>
+        <p class="hint">预设会一次调好下面四项。也可以选完再单独微调。</p>
         <label class="slider-label" for="simplify-slider">
           卡通化
           <output id="simplify-value">中等 · 卡通化</output>
@@ -987,6 +992,11 @@ tbody tr:hover { background: var(--bg); }
             <output id="vivid-value">原样</output>
           </label>
           <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
+          <label class="slider-label" for="contrast-slider">
+            明暗对比<span class="hint"> · 把压扁的明度拉开</span>
+            <output id="contrast-value">原样</output>
+          </label>
+          <input type="range" id="contrast-slider" min="0" max="100" step="10" value="0" />
         </div>
       </div>
 
@@ -1796,6 +1806,8 @@ const sharpenSlider = document.getElementById("sharpen-slider");
 const sharpenValue = document.getElementById("sharpen-value");
 const vividSlider = document.getElementById("vivid-slider");
 const vividValue = document.getElementById("vivid-value");
+const contrastSlider = document.getElementById("contrast-slider");
+const contrastValue = document.getElementById("contrast-value");
 
 // radius 决定"多大范围算一个区块"，passes 决定压得多死，sharpen 是压平之后
 // 补的一点边界强调。
@@ -1813,14 +1825,45 @@ function structureSetting() {
 function vividAmount() {
   return (parseInt(vividSlider.value, 10) || 100) / 100;
 }
+function contrastAmount() {
+  return (parseInt(contrastSlider.value, 10) || 0) / 100;
+}
 function syncDetailLabels() {
   sharpenValue.textContent = structureSetting().label;
   const v = vividAmount();
   vividValue.textContent = v <= 1.001 ? "原样" : `×${v.toFixed(1)}`;
+  const cst = contrastAmount();
+  contrastValue.textContent = cst <= 0.001 ? "原样" : `${Math.round(cst * 100)}%`;
 }
 syncDetailLabels();
 sharpenSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 vividSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+contrastSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+
+// ---------- 风格预设 ----------
+// 上面这些旋钮单独调都有意义，但"我想要那种卡通插画的效果"是一个整体诉求：
+// 它同时要求压平区块、拉开明暗、提高彩度、减少颜色。逐个去试很难碰对组合，
+// 所以直接给出几套调好的。
+const STYLE_PRESETS = {
+  faithful:   { simplify: 1, structure: 1, vivid: 100, contrast: 0 },
+  illustration: { simplify: 2, structure: 3, vivid: 150, contrast: 70 },
+  poster:     { simplify: 3, structure: 4, vivid: 180, contrast: 100 },
+};
+
+document.querySelectorAll(".style-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const preset = STYLE_PRESETS[btn.dataset.style];
+    if (!preset) return;
+    document.querySelectorAll(".style-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    simplifySlider.value = preset.simplify;
+    sharpenSlider.value = preset.structure;
+    vividSlider.value = preset.vivid;
+    contrastSlider.value = preset.contrast;
+    syncSimplifyLabel();
+    syncDetailLabels();
+    regenerate();
+  });
+});
 
 // ---------- Kuwahara: 按区块压平，只留边界 ----------
 // 一般的锐化（USM）在这里是错的思路：它无差别地放大所有高频，笔触噪点和
@@ -1873,7 +1916,7 @@ function kuwahara(data, W, H, radius) {
 
 // 结构增强 + 彩度补偿。都在中间图上做，也就是量化之前 —— 之后再做就只能
 // 加工已经丢失的信息了。
-function enhanceImageData(imageData, structure, vivid) {
+function enhanceImageData(imageData, structure, vivid, contrast = 0) {
   const { width: W, height: H } = imageData;
   let data = imageData.data;
 
@@ -1912,6 +1955,40 @@ function enhanceImageData(imageData, structure, vivid) {
         }
       }
       data = sharp;
+    }
+  }
+
+  // 明度拉伸（auto-levels）。很多画作的实际明度范围是被压扁的 —— 莫奈那张
+  // 只占 L* 25–76，最亮的云和最暗的伞面都远没到两端。缩到几千格之后这段
+  // 本来就窄的范围还要再被量化，结果就是一片中间调的灰。
+  //
+  // 按分位点拉伸（而不是按最值）：一两颗噪点像素不该决定整张图的映射。
+  // 拉的是亮度，不动色相 —— 所以天空会变成"干净的浅蓝 + 纯白云"，而不是
+  // 整体泛白。
+  if (contrast > 0.001) {
+    const lum = new Float32Array(W * H);
+    for (let p = 0; p < W * H; p++) {
+      const o = p * 4;
+      lum[p] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+    }
+    const sorted = Float32Array.from(lum).sort();
+    const lo = sorted[Math.floor(sorted.length * 0.02)];
+    const hi = sorted[Math.floor(sorted.length * 0.98)];
+    if (hi - lo > 1) {
+      const out = new Uint8ClampedArray(data);
+      for (let p = 0; p < W * H; p++) {
+        const o = p * 4;
+        const y = lum[p];
+        const stretched = ((y - lo) / (hi - lo)) * 255;
+        // 只按 contrast 的比例往拉伸后的值靠，0 = 完全不动，1 = 拉满
+        const target = y + (clamp(stretched, 0, 255) - y) * contrast;
+        // 各通道按同一个比例缩放，保持色相与相对彩度不变
+        const k = y > 1 ? target / y : 1;
+        out[o] = data[o] * k;
+        out[o + 1] = data[o + 1] * k;
+        out[o + 2] = data[o + 2] * k;
+      }
+      data = out;
     }
   }
 
@@ -1994,7 +2071,8 @@ async function regenerate() {
   const imageData = enhanceImageData(
     prepareIntermediate(sourceImage, cropRect, allowRect, cap),
     structureSetting(),
-    vividAmount()
+    vividAmount(),
+    contrastAmount()
   );
   const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, boardW * factor, boardH * factor, fillRatio);
 
@@ -2351,21 +2429,35 @@ function buildReducedPalette(imageData, k) {
     const key = ((data[o] >> 3) << 10) | ((data[o + 1] >> 3) << 5) | (data[o + 2] >> 3);
     hist.set(key, (hist.get(key) || 0) + 1);
   }
-  const pts = [];
+  const raw = [];
   for (const [key, count] of hist) {
     const r = ((key >> 10) & 31) * 8 + 4, g = ((key >> 5) & 31) * 8 + 4, b = (key & 31) * 8 + 4;
-    const lab = rgbToLab(r, g, b);
-    // 权重不是单纯的像素数，而是 sqrt(面积) × 彩度加成。理由是纯按面积
-    // 加权会让"占地最大"的颜色吃掉几乎所有聚类名额：一张画里大片中间调
-    // 的灰绿会分到十几个几乎看不出区别的簇，而面积小但一眼就看见的东西
-    // —— 一把绿伞、一条浅色裙子、一块蓝天 —— 连一个簇都分不到，被并进灰色。
-    //
-    // sqrt 压平面积差距（10000px 的区域只值 100px 区域的 10 倍，而不是 100
-    // 倍），彩度加成再让有颜色的区域优先保住自己的簇。实测在莫奈这类破碎
-    // 笔触的画上，伞和裙子从"消失"变成"能认出来"。
-    const chroma = Math.hypot(lab[1], lab[2]);
-    pts.push({ lab, w: Math.sqrt(count) * (1 + chroma / 12) });
+    raw.push({ lab: rgbToLab(r, g, b), count });
   }
+
+  // 整幅画的加权平均色 —— 用来衡量每种颜色"有多特别"。
+  let mL = 0, mA = 0, mB = 0, total = 0;
+  for (const p of raw) {
+    mL += p.lab[0] * p.count; mA += p.lab[1] * p.count; mB += p.lab[2] * p.count;
+    total += p.count;
+  }
+  const mean = total ? [mL / total, mA / total, mB / total] : [50, 0, 0];
+
+  // 权重 = sqrt(面积) × 特异度加成，两项各自解决一个问题。
+  //
+  // 纯按面积加权，"占地最大"的颜色会吃掉几乎所有聚类名额：大片中间调的
+  // 灰绿分到十几个几乎看不出区别的簇，而面积小但一眼就看见的东西 —— 一把
+  // 绿伞、裙子边缘的一圈高光 —— 连一个簇都分不到，被并进灰色。sqrt 把
+  // 10000px 的区域压到只值 100px 区域的 10 倍而不是 100 倍。
+  //
+  // 特异度 = 离全图平均色多远。早先这里用的是彩度，但那样只顾得上鲜艳的
+  // 颜色，而**白色高光的彩度接近 0** —— 一件浅色衣服上那圈让形体立起来的
+  // 亮边，彩度加权完全无感，照样被并掉。改成"离平均色的距离"后，鲜艳的
+  // 重点色和黑白两端的极值都能保住自己的簇。
+  const pts = raw.map((p) => ({
+    lab: p.lab,
+    w: Math.sqrt(p.count) * (1 + Math.sqrt(labDistance(p.lab, mean)) / 14),
+  }));
   if (pts.length <= k) return dedupeToMard(pts.map((p) => p.lab));
 
   // k-means++ seeding: plain random seeding regularly drops every seed into

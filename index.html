@@ -77,8 +77,13 @@
       </div>
 
       <div class="control-group">
-        <div class="step"><span class="step-num">4</span><label for="simplify-slider">简化程度</label></div>
-        <p class="hint">合并相近颜色、清掉零星单颗豆，让天空水面这类区域成为整片纯色。</p>
+        <div class="step"><span class="step-num">4</span><label for="simplify-slider">画面风格</label></div>
+        <div class="seg" id="style-presets">
+          <button class="seg-btn style-btn" data-style="faithful">忠实<em>照片、像素图</em></button>
+          <button class="seg-btn style-btn" data-style="illustration">插画<em>油画、厚涂</em></button>
+          <button class="seg-btn style-btn" data-style="poster">海报<em>大色块、强对比</em></button>
+        </div>
+        <p class="hint">预设会一次调好下面四项。也可以选完再单独微调。</p>
         <label class="slider-label" for="simplify-slider">
           卡通化
           <output id="simplify-value">中等 · 卡通化</output>
@@ -98,6 +103,11 @@
             <output id="vivid-value">原样</output>
           </label>
           <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
+          <label class="slider-label" for="contrast-slider">
+            明暗对比<span class="hint"> · 把压扁的明度拉开</span>
+            <output id="contrast-value">原样</output>
+          </label>
+          <input type="range" id="contrast-slider" min="0" max="100" step="10" value="0" />
         </div>
       </div>
 
