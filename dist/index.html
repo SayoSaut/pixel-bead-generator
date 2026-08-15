@@ -900,13 +900,14 @@ tbody tr:hover { background: var(--bg); }
         <div class="card-head">
           <h2>图纸预览</h2>
           <div class="zoom-toolbar">
+            <button id="open-editor" class="btn-ghost" disabled>编辑格子</button>
             <button id="zoom-out" class="btn-icon" title="缩小">−</button>
             <span id="zoom-label">100%</span>
             <button id="zoom-in" class="btn-icon" title="放大">+</button>
             <button id="zoom-fit" class="btn-ghost">适应宽度</button>
           </div>
         </div>
-        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
+        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 双击或拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
         <div class="highlight-info" id="highlight-info" hidden></div>
         <div class="pattern-wrap">
           <canvas id="pattern-canvas"></canvas>
@@ -1712,6 +1713,8 @@ async function regenerate() {
 
   exportPngBtn.disabled = false;
   exportCsvBtn.disabled = false;
+  const openEditorBtn = document.getElementById("open-editor");
+  if (openEditorBtn) openEditorBtn.disabled = false;
 
   // Note: any manual per-cell edits made in the editor before this
   // regenerate() ran are gone now — this rebuilds `cells` from scratch from
@@ -3154,6 +3157,21 @@ function drawSelectionOverlay(canvasEl, sel) {
   ctx.restore();
 }
 
+// Three ways in, because the obvious one had to be given up: a plain click
+// on the preview now highlights a color, so it can no longer also open the
+// editor. Dragging alone would leave the editor effectively undiscoverable —
+// nobody drags across a chart to find out what happens.
+patternCanvas.addEventListener("dblclick", (evt) => {
+  const cell = patternCellFromEvent(evt, patternCanvas);
+  if (!cell) return;
+  highlightIndex = null;
+  editorSelection = new Set([cellKey(cell.gx, cell.gy)]);
+  renderPattern(lastPattern);
+  renderUsage(lastPattern);
+  updateHighlightInfo();
+  openCellEditor();
+});
+
 function openCellEditor() {
   if (!lastPattern || !sourceImage) return;
   cellEditor.hidden = false;
@@ -3162,6 +3180,8 @@ function openCellEditor() {
   renderEditorRecommendations();
   updateEditorSelectionInfo();
 }
+
+bindIfPresent("open-editor", "click", () => openCellEditor());
 
 editorExitBtn.addEventListener("click", () => {
   cellEditor.hidden = true;

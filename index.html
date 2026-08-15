@@ -126,13 +126,14 @@
         <div class="card-head">
           <h2>图纸预览</h2>
           <div class="zoom-toolbar">
+            <button id="open-editor" class="btn-ghost" disabled>编辑格子</button>
             <button id="zoom-out" class="btn-icon" title="缩小">−</button>
             <span id="zoom-label">100%</span>
             <button id="zoom-in" class="btn-icon" title="放大">+</button>
             <button id="zoom-fit" class="btn-ghost">适应宽度</button>
           </div>
         </div>
-        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
+        <p class="hint">单击一格 → 高亮该颜色并按行标号 · 双击或拖拽框选 → 进入编辑（<kbd>Shift</kbd> 累加选区）</p>
         <div class="highlight-info" id="highlight-info" hidden></div>
         <div class="pattern-wrap">
           <canvas id="pattern-canvas"></canvas>

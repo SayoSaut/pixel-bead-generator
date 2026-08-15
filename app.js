@@ -551,6 +551,8 @@ async function regenerate() {
 
   exportPngBtn.disabled = false;
   exportCsvBtn.disabled = false;
+  const openEditorBtn = document.getElementById("open-editor");
+  if (openEditorBtn) openEditorBtn.disabled = false;
 
   // Note: any manual per-cell edits made in the editor before this
   // regenerate() ran are gone now — this rebuilds `cells` from scratch from
@@ -1993,6 +1995,21 @@ function drawSelectionOverlay(canvasEl, sel) {
   ctx.restore();
 }
 
+// Three ways in, because the obvious one had to be given up: a plain click
+// on the preview now highlights a color, so it can no longer also open the
+// editor. Dragging alone would leave the editor effectively undiscoverable —
+// nobody drags across a chart to find out what happens.
+patternCanvas.addEventListener("dblclick", (evt) => {
+  const cell = patternCellFromEvent(evt, patternCanvas);
+  if (!cell) return;
+  highlightIndex = null;
+  editorSelection = new Set([cellKey(cell.gx, cell.gy)]);
+  renderPattern(lastPattern);
+  renderUsage(lastPattern);
+  updateHighlightInfo();
+  openCellEditor();
+});
+
 function openCellEditor() {
   if (!lastPattern || !sourceImage) return;
   cellEditor.hidden = false;
@@ -2001,6 +2018,8 @@ function openCellEditor() {
   renderEditorRecommendations();
   updateEditorSelectionInfo();
 }
+
+bindIfPresent("open-editor", "click", () => openCellEditor());
 
 editorExitBtn.addEventListener("click", () => {
   cellEditor.hidden = true;

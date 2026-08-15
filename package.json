@@ -1,0 +1,11 @@
+{
+  "name": "pixel-bead-generator",
+  "private": true,
+  "description": "拼豆图纸生成器 —— 前端本身无依赖，这里只声明测试用的开发依赖",
+  "scripts": {
+    "test": "node tests/run.js"
+  },
+  "devDependencies": {
+    "jsdom": "^28.0.0"
+  }
+}
