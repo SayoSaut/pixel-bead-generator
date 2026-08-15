@@ -1,0 +1,6 @@
+.DS_Store
+node_modules/
+
+# 本地测试图片：内含第三方美术素材（Riot Games 卡牌图等），
+# 只在本地用来试功能，不进公开仓库。
+testpic/
