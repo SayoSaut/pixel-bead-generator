@@ -39,6 +39,21 @@ const cutoutEnabledCheckbox = document.getElementById("cutout-enabled");
 const cutoutToleranceSlider = document.getElementById("cutout-tolerance");
 const cutoutToleranceValue = document.getElementById("cutout-tolerance-value");
 
+// ---------- 像素画还原（按原始分辨率 1:1 取色） ----------
+const pixelRestoreCheckbox = document.getElementById("pixel-restore");
+const pixelRestoreDetail = document.getElementById("pixel-restore-detail");
+const pixelNativeWInput = document.getElementById("pixel-native-w");
+const pixelNativeHInput = document.getElementById("pixel-native-h");
+const pixelDetectBtn = document.getElementById("pixel-detect");
+const pixelRestoreNote = document.getElementById("pixel-restore-note");
+const pixelAntiWatermarkCheckbox = document.getElementById("pixel-anti-watermark");
+const perceptualCheckbox = document.getElementById("perceptual-scale");
+let pixelRestore = false;         // 模式开关
+let pixelRestoreManual = false;   // 用户是否手填了原始尺寸（填了就以他为准，不再自动检测）
+let pixelRestoreW = null, pixelRestoreH = null;
+let pixelRestoreSavedBoard = null; // 进入还原前的板子尺寸，关掉时还原回去
+let pixelDetectCache = null;      // 按裁剪区签名缓存检测结果，避免每次调滑块都重算
+
 // Quadratic ease-in: most of the slider's travel covers the low end, where
 // small differences in tolerance matter most for separating a subject from
 // its background; the last stretch covers a much wider absolute range for
@@ -526,6 +541,68 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
   });
 });
 
+// ---------- 像素画还原：控件事件 ----------
+function setPixelRestoreNote(text, warn = false) {
+  if (!pixelRestoreNote) return;
+  pixelRestoreNote.textContent = text;
+  pixelRestoreNote.hidden = false;
+  pixelRestoreNote.classList.toggle("warn", warn);
+}
+function applyPixelNative() {
+  const w = Number(pixelNativeWInput && pixelNativeWInput.value) || 0;
+  const h = Number(pixelNativeHInput && pixelNativeHInput.value) || w;
+  if (w >= 1) {
+    pixelRestoreManual = true;
+    pixelRestoreW = w;
+    pixelRestoreH = h || w;
+    regenerate();
+  }
+}
+if (pixelRestoreCheckbox) {
+  pixelRestoreCheckbox.addEventListener("change", () => {
+    pixelRestore = pixelRestoreCheckbox.checked;
+    if (pixelRestoreDetail) pixelRestoreDetail.hidden = !pixelRestore;
+    if (pixelRestoreNote) pixelRestoreNote.hidden = !pixelRestore;
+    if (pixelRestore) {
+      // 还原会把板子尺寸改成原始分辨率；先记住原来的板子，关掉时好还原回去
+      pixelRestoreSavedBoard = { w: boardW, h: boardH };
+      // 每次开启都从自动检测开始；用户如已手填过就沿用
+      if (!pixelRestoreManual) { pixelRestoreW = pixelRestoreH = null; }
+      setPixelRestoreNote("正在按原始像素尺寸还原…");
+    } else {
+      setMlStatus("");
+      if (pixelRestoreSavedBoard) {
+        boardW = pixelRestoreSavedBoard.w; boardH = pixelRestoreSavedBoard.h;
+        boardSize = Math.max(boardW, boardH);
+      }
+    }
+    regenerate();
+  });
+}
+if (pixelDetectBtn) {
+  pixelDetectBtn.addEventListener("click", () => {
+    pixelRestoreManual = false;
+    pixelRestoreW = pixelRestoreH = null;
+    pixelDetectCache = null;
+    if (pixelNativeWInput) pixelNativeWInput.value = "";
+    if (pixelNativeHInput) pixelNativeHInput.value = "";
+    regenerate();
+  });
+}
+for (const input of [pixelNativeWInput, pixelNativeHInput]) {
+  if (!input) continue;
+  input.addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter") { evt.preventDefault(); applyPixelNative(); }
+  });
+  input.addEventListener("change", applyPixelNative);
+}
+if (pixelAntiWatermarkCheckbox) {
+  pixelAntiWatermarkCheckbox.addEventListener("change", regenerate);
+}
+if (perceptualCheckbox) {
+  perceptualCheckbox.addEventListener("change", regenerate);
+}
+
 // ---------- Kuwahara: 按区块压平，只留边界 ----------
 // 一般的锐化（USM）在这里是错的思路：它无差别地放大所有高频，笔触噪点和
 // 真正的轮廓一起被放大，结果是更花而不是更清楚。
@@ -716,6 +793,7 @@ let regenerateToken = 0;
 // clobbering whatever the newer one rendered.
 async function regenerate() {
   if (!sourceImage || !cropRect) return;
+  if (pixelRestore) return regeneratePixelRestore();
   const myToken = ++regenerateToken;
 
   const allowRect = allowRectCheckbox.checked;
@@ -784,17 +862,26 @@ async function regenerate() {
     }
   }
 
+  // 感知缩放（名画）与抖动是两条对立的定色思路，不同时用：开了感知缩放就把
+  // 抖动按 0 处理，让后面的消噪/去碎照常跑。
+  const perceptual = perceptualCheckbox && perceptualCheckbox.checked;
   // 纹理判别用的是**增强前**的图：结构增强本来就是为了压平纹理，在它之后
   // 再去判断哪里是纹理，草地早就被抹平了，什么也判不出来。
-  const dither = ditherAmount();
+  const dither = perceptual ? 0 : ditherAmount();
   const textureMap = dither > 0
     ? computeTextureMap(rawIntermediate.data, imageData.width, imageData.height, sourceGridW, sourceGridH).texture
     : null;
 
-  const sourceCells = blockModeQuantize(
-    indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask,
-    { data: imageData.data, palette: allowedPalette || scopedPalette(), dither, textureMap }
-  );
+  const sourceCells = perceptual
+    ? perceptualCells(
+        perceptualDownscale(imageData, sourceGridW, sourceGridH),
+        sourceGridW, sourceGridH, imageData.width, imageData.height, bgMask,
+        allowedPalette || scopedPalette()
+      )
+    : blockModeQuantize(
+        indices, imageData.width, imageData.height, sourceGridW, sourceGridH, bgMask,
+        { data: imageData.data, palette: allowedPalette || scopedPalette(), dither, textureMap }
+      );
   let { gridW, gridH, cells } = superSample
     ? downsampleCellsByHalf(sourceCells, sourceGridW, sourceGridH)
     : { gridW: sourceGridW, gridH: sourceGridH, cells: sourceCells };
@@ -849,6 +936,174 @@ async function regenerate() {
   // the current crop/board/cutout settings, with no memory of prior
   // overrides. That's intentional: the editor is a final polish step, meant
   // to run after upstream settings are already dialed in.
+}
+
+// ---------- 像素画还原：生成路径 ----------
+// 与主流程分开：主流程是"把大图缩小 + 配色 + 卡通化"，会平均、锐化、简化 ——
+// 对本来就是像素画的图恰恰有害。这里反过来：先拿到原始尺寸，再一格一原始像素
+// 地取色，除了必须的"配到 Mard 色卡"之外什么都不做，力求照搬原样。
+const PIXEL_RESTORE_MAX = 256; // 还原网格上限（一格 = 一原始像素）
+
+function cropNativeSize(allowRect) {
+  let { w, h } = cropRect;
+  if (!allowRect) { const s = Math.min(w, h); w = s; h = s; }
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
+
+// 用较高分辨率取出裁剪区做检测：太低分辨不出块边界。
+function samplePixelDetect(allowRect) {
+  let { w, h } = cropRect;
+  if (!allowRect) { const s = Math.min(w, h); w = s; h = s; }
+  const cap = 1400;
+  const scale = Math.min(1, cap / Math.max(w, h));
+  const dw = Math.max(1, Math.round(w * scale));
+  const dh = Math.max(1, Math.round(h * scale));
+  return sampleRegion(sourceImage, cropRect, allowRect, dw, dh);
+}
+
+function runPixelDetect() {
+  const allowRect = allowRectCheckbox.checked;
+  const key = `${cropRect.x.toFixed(1)},${cropRect.y.toFixed(1)},${cropRect.w.toFixed(1)},${cropRect.h.toFixed(1)},${allowRect}`;
+  if (pixelDetectCache && pixelDetectCache.key === key) {
+    return pixelDetectCache.none ? null : pixelDetectCache;
+  }
+  const c = cropNativeSize(allowRect);
+  const det = detectPixelArtNative(samplePixelDetect(allowRect));
+  let res;
+  if (det) {
+    res = { key, nw: det.nw, nh: det.nh, scale: c.w / det.nw, source: "detected" };
+  } else if (Math.max(c.w, c.h) <= PIXEL_RESTORE_MAX) {
+    // 没检测到放大痕迹：可能本来就是原始分辨率，且裁剪区不大 —— 直接当原尺寸
+    res = { key, nw: c.w, nh: c.h, scale: 1, source: "native" };
+  } else {
+    res = { key, none: true };
+  }
+  pixelDetectCache = res;
+  return res.none ? null : res;
+}
+
+async function regeneratePixelRestore() {
+  if (!sourceImage || !cropRect) return;
+  const myToken = ++regenerateToken;
+  const allowRect = allowRectCheckbox.checked;
+
+  let nw, nh;
+  if (pixelRestoreManual && pixelRestoreW) {
+    nw = pixelRestoreW; nh = pixelRestoreH || pixelRestoreW;
+    setPixelRestoreNote(`按你填的原始尺寸 ${clamp(Math.round(nw), 1, PIXEL_RESTORE_MAX)}×${clamp(Math.round(nh), 1, PIXEL_RESTORE_MAX)} 还原。`);
+  } else {
+    const det = runPixelDetect();
+    if (!det) {
+      setPixelRestoreNote("没能自动判断原始尺寸（可能不是放大的像素画，或裁剪区太大）。请直接在上面填入你知道的原始尺寸。", true);
+      return;
+    }
+    nw = det.nw; nh = det.nh;
+    if (pixelNativeWInput) pixelNativeWInput.value = nw;
+    if (pixelNativeHInput) pixelNativeHInput.value = nh;
+    if (det.source === "detected") {
+      const s = det.scale;
+      const sTxt = s >= 1.05 ? `，原图约放大 ×${s < 10 ? s.toFixed(1) : Math.round(s)}` : "";
+      setPixelRestoreNote(`检测到原始尺寸 ${nw}×${nh}${sTxt}。按此 1:1 取色还原。`);
+    } else {
+      setPixelRestoreNote(`未见放大痕迹，按裁剪区原始尺寸 ${nw}×${nh} 还原。`);
+    }
+  }
+
+  nw = clamp(Math.round(nw), 1, PIXEL_RESTORE_MAX);
+  nh = clamp(Math.round(nh), 1, PIXEL_RESTORE_MAX);
+
+  const palette = scopedPalette();
+
+  // 取样分辨率：默认一格一原始像素（sw=nw, sh=nh），最近邻让每格落在一个像素
+  // 块内部、取到的就是那个像素的原色，不平均不插值。开启「抗水印」时改为在更高
+  // 分辨率上取样，让每格覆盖多个原始像素，再按块内多数票定色 —— 细线、半透明、
+  // 小 logo 这类水印在一格里是少数像素，会被投票淘汰，露出底下原色。
+  const antiWM = pixelAntiWatermarkCheckbox && pixelAntiWatermarkCheckbox.checked;
+  let sw = nw, sh = nh;
+  if (antiWM) {
+    const c = cropNativeSize(allowRect);
+    const os = clamp(Math.round(900 / Math.max(nw, nh)), 2, 12); // 每格约 os×os 个采样
+    sw = Math.min(nw * os, Math.max(nw, c.w));
+    sh = Math.min(nh * os, Math.max(nh, c.h));
+  }
+  const sample = sampleRegion(sourceImage, cropRect, allowRect, sw, sh);
+
+  // 抠图（可选）：沿用主流程三种方式，尺寸换成当前取样网格。
+  let bgMask = null;
+  const useCutout = cutoutEnabledCheckbox.checked;
+  if (useCutout && cutoutMode === "color") {
+    bgMask = computeBackgroundMask(sample, toleranceFromSlider(parseFloat(cutoutToleranceSlider.value)));
+  } else if (useCutout && cutoutMode === "ml") {
+    setMlStatus("正在运行 ML 分割…");
+    try {
+      bgMask = await computeMlForegroundMask(sourceImage, cropRect, allowRect, sw, sh);
+      if (myToken !== regenerateToken) return;
+      setMlStatus("ML 人像分割完成");
+    } catch (err) {
+      if (myToken !== regenerateToken) return;
+      setMlStatus("ML 模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）");
+      bgMask = null;
+    }
+  } else if (useCutout && cutoutMode === "general") {
+    setMlStatus("正在运行通用物体分割（首次需下载模型，约 40MB）…");
+    try {
+      bgMask = await computeGeneralForegroundMask(sourceImage, cropRect, allowRect, sw, sh);
+      if (myToken !== regenerateToken) return;
+      setMlStatus("通用物体分割完成");
+    } catch (err) {
+      if (myToken !== regenerateToken) return;
+      setMlStatus("通用物体分割模型加载/运行失败：" + err.message + "（已跳过抠图，其余部分正常生成）");
+      bgMask = null;
+    }
+  }
+
+  let cells;
+  if (antiWM) {
+    // 每个采样像素先配到色卡，再在每格里取出现最多的色号（复用 blockModeQuantize
+    // 的纯众数分支）—— 水印那点少数像素自然被多数票淘汰。
+    const idx = quantizeIndices(sample, palette);
+    cells = blockModeQuantize(idx, sw, sh, nw, nh, bgMask, {});
+  } else {
+    const data = sample.data;
+    cells = [];
+    for (let gy = 0; gy < nh; gy++) {
+      const row = [];
+      for (let gx = 0; gx < nw; gx++) {
+        const p = gy * nw + gx;
+        if (bgMask && bgMask[p]) { row.push(null); continue; }
+        const o = p * 4;
+        row.push(nearestInPalette(data[o], data[o + 1], data[o + 2], palette));
+      }
+      cells.push(row);
+    }
+  }
+
+  boardW = nw; boardH = nh; boardSize = Math.max(nw, nh);
+  editorSelection = new Set();
+  highlightIndex = null;
+  lastPattern = { gridW: nw, gridH: nh, cells };
+  renderPattern(lastPattern);
+  renderUsage(lastPattern);
+  updateHighlightInfo();
+
+  const shapeKey = `restore-${nw}x${nh}`;
+  if (shapeKey !== lastZoomedBoardSize) {
+    lastZoomedBoardSize = shapeKey;
+    setZoom((patternWrap.clientWidth - 4) / patternCanvas.width);
+  }
+
+  const { sorted, total } = countBeads(cells);
+  renderStats([
+    ["还原尺寸", `${nw}×${nh}`, nw > 160 || nh > 160 ? "超常规板" : "格"],
+    ["用色", `${sorted.length}`, "种"],
+    ["总豆数", `${total}`, "颗"],
+    ["模式", "像素还原", useCutout ? "已抠图" : (antiWM ? "抗水印" : "1:1")],
+  ]);
+
+  exportPngBtn.disabled = false;
+  exportCsvBtn.disabled = false;
+  const openEditorBtn = document.getElementById("open-editor");
+  if (openEditorBtn) openEditorBtn.disabled = false;
 }
 
 function renderStats(rows) {
@@ -1003,6 +1258,74 @@ function despeckleIndices(indices, W, H) {
   return out;
 }
 
+// ---------- 像素画原始分辨率检测 ----------
+// 放大过的像素画，其"原始像素块"的边界会在行/列方向形成规则的高频跳变，而
+// 块内部相邻的行/列只是同一批像素的副本、差异≈0。据此可反推原始尺寸：沿 x
+// 方向算每一列与前一列的平均色差 colE[x]（真正的块边界是尖峰，块内部是 0），
+// 再从最粗的网格往细里试各个"原始列数 N"。若某个 N 的网格边界（round(k*L/N)）
+// 几乎盖住了全部色差能量、块内几乎没有漏网的能量，这个 N 就是原始宽度。
+// 从小到大取第一个通过的 = 最粗的真实网格（原始分辨率本身，而不是它的整数倍）。
+//
+// 用 tol=0（只认落在边界列上的能量）是关键：整数倍放大的像素画边界正好落在
+// round(k*L/N) 上，块内部相邻列是同一像素的副本、色差为 0，所以真正的原始
+// 网格能把几乎全部能量收进边界、块内几乎不漏；而普通照片"到处都是边"，任何
+// 比 L/2 粗的网格都会漏掉大量块内能量，于是判不出周期 → 返回 null（视作"不是
+// 放大的像素画"）。
+function detectAxisPeriod(E, L, offTol = 0.14, minBlock = 2, maxCandidate = 256) {
+  let total = 0;
+  for (let i = 0; i < L; i++) total += E[i];
+  if (total < 1e-9) return 1; // 这一轴完全平坦（如纯色），块大小无所谓，记 1
+  const maxN = Math.min(Math.floor(L / minBlock), maxCandidate);
+  for (let N = 2; N <= maxN; N++) {
+    let onGrid = 0;
+    for (let k = 1; k < N; k++) {
+      const b = Math.round((k * L) / N);
+      if (b >= 1 && b < L) onGrid += E[b];
+    }
+    if (1 - onGrid / total <= offTol) return N;
+  }
+  return null;
+}
+
+function detectPixelArtNative(imageData) {
+  const { width: W, height: H, data } = imageData;
+  const colE = new Float64Array(W);
+  const rowE = new Float64Array(H);
+  for (let y = 0; y < H; y++) {
+    const rowBase = y * W;
+    for (let x = 1; x < W; x++) {
+      const o1 = (rowBase + x) * 4, o0 = (rowBase + x - 1) * 4;
+      const dr = data[o1] - data[o0], dg = data[o1 + 1] - data[o0 + 1], db = data[o1 + 2] - data[o0 + 2];
+      colE[x] += Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+  }
+  for (let x = 0; x < W; x++) colE[x] /= H;
+  for (let y = 1; y < H; y++) {
+    const rowBase = y * W, prevBase = (y - 1) * W;
+    for (let x = 0; x < W; x++) {
+      const o1 = (rowBase + x) * 4, o0 = (prevBase + x) * 4;
+      const dr = data[o1] - data[o0], dg = data[o1 + 1] - data[o0 + 1], db = data[o1 + 2] - data[o0 + 2];
+      rowE[y] += Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+  }
+  for (let y = 0; y < H; y++) rowE[y] /= W;
+  const nw = detectAxisPeriod(denoiseEdgeSignal(colE, W), W);
+  const nh = detectAxisPeriod(denoiseEdgeSignal(rowE, H), H);
+  if (!nw || !nh) return null;
+  return { nw, nh, blockW: W / nw, blockH: H / nh };
+}
+
+// 去掉压缩/拍摄噪声形成的"能量地板"：像素画绝大多数行/列是块内部（色差≈基线
+// 噪声），只有少数块边界是尖峰。减掉中位数作为噪声地板后，块内部归零、边界
+// 依旧突出，检测才不会被 JPEG 噪点带偏（tol=0 对噪声很敏感，这一步是关键）。
+function denoiseEdgeSignal(E, L) {
+  const sorted = Array.from(E.subarray(0, L)).sort((a, b) => a - b);
+  const base = sorted[Math.floor(L * 0.5)]; // 中位数 = 噪声地板（块内部占多数）
+  const out = new Float64Array(L);
+  for (let i = 0; i < L; i++) out[i] = Math.max(0, E[i] - base);
+  return out;
+}
+
 // "contain" 装箱：在 bw×bh 的板子里尽量放大，保持画面比例不变形。
 // 板子本身可以不是正方形，所以要按两个方向各自能放多少来取较小的那个缩放比。
 function computeGrid(srcW, srcH, bw, bh, fillRatio) {
@@ -1012,6 +1335,104 @@ function computeGrid(srcW, srcH, bw, bh, fillRatio) {
   gridW = Math.min(gridW, bw);
   gridH = Math.min(gridH, bh);
   return { gridW, gridH };
+}
+
+// ---------- 感知缩放（名画：一眼看出原画） ----------
+// 普通降采样是每格取平均，把区块内部的对比和结构一并抹平；缩到几千格后，一幅
+// 画常常糊成一片中间调，认不出是哪幅。感知缩放（Öztireli & Gross, SIGGRAPH
+// 2015，基于 SSIM 的闭式解）反过来：哪一格内部藏了很多细节（块内方差大）、又
+// 处在局部平坦的区域（邻格方差小），就把它相对邻域的偏差放大，把平均吃掉的
+// 局部对比重新顶出来 —— 于是脸、剪影、招牌笔触这些"认得出原画"的特征在同样的
+// 格数下保留得更多。招牌色的保留由 buildReducedPalette 的特异度加权负责，两者
+// 叠加。
+//
+// 算法：
+//   L  = 每格输入均值（= 普通降采样）
+//   L2 = 每格输入平方的均值
+//   在 2×2 输出格的邻域上：M=均值(L)，σL²=方差(L)，σH²=均值(L2)-M²
+//   R  = sqrt(σH²/σL²)（σL²过小则取 2）
+//   每格输出 = 覆盖它的各邻域给出的 M + R·(L−M) 的平均，夹到 [0,255]
+function perceptualDownscale(imageData, gridW, gridH) {
+  const { width: W, height: H, data } = imageData;
+  const N = gridW * gridH;
+  const L = [new Float64Array(N), new Float64Array(N), new Float64Array(N)];
+  const L2 = [new Float64Array(N), new Float64Array(N), new Float64Array(N)];
+  for (let gy = 0; gy < gridH; gy++) {
+    const y0 = Math.floor((gy * H) / gridH), y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * H) / gridH));
+    for (let gx = 0; gx < gridW; gx++) {
+      const x0 = Math.floor((gx * W) / gridW), x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * W) / gridW));
+      let s0 = 0, s1 = 0, s2 = 0, q0 = 0, q1 = 0, q2 = 0, n = 0;
+      for (let y = y0; y < y1; y++) {
+        let base = y * W * 4;
+        for (let x = x0; x < x1; x++) {
+          const o = base + x * 4;
+          const r = data[o], g = data[o + 1], b = data[o + 2];
+          s0 += r; s1 += g; s2 += b; q0 += r * r; q1 += g * g; q2 += b * b; n++;
+        }
+      }
+      const i = gy * gridW + gx;
+      L[0][i] = s0 / n; L[1][i] = s1 / n; L[2][i] = s2 / n;
+      L2[0][i] = q0 / n; L2[1][i] = q1 / n; L2[2][i] = q2 / n;
+    }
+  }
+
+  const out = new Uint8ClampedArray(N * 4);
+  const acc = [new Float64Array(N), new Float64Array(N), new Float64Array(N)];
+  const cnt = new Float64Array(N);
+  const EPS = 1e-6;
+  // 遍历每个 2×2 邻域（以 (px,py) 为左上），算出该邻域的线性重映射 M+R·(L−M)，
+  // 累加到它覆盖的 4 个格子上；重叠邻域取平均。边界处夹取索引。
+  for (let py = 0; py < gridH; py++) {
+    for (let px = 0; px < gridW; px++) {
+      const ids = [];
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          const nx = Math.min(px + dx, gridW - 1), ny = Math.min(py + dy, gridH - 1);
+          ids.push(ny * gridW + nx);
+        }
+      }
+      for (let c = 0; c < 3; c++) {
+        let mL = 0, mLL = 0, mHH = 0;
+        for (const id of ids) { mL += L[c][id]; mLL += L[c][id] * L[c][id]; mHH += L2[c][id]; }
+        mL /= 4; mLL /= 4; mHH /= 4;
+        const sigmaL = mLL - mL * mL;
+        const sigmaH = mHH - mL * mL;
+        let R = sigmaL >= EPS ? Math.sqrt(Math.max(0, sigmaH) / sigmaL) : 2.0;
+        if (R > 4) R = 4; // 防止极端对比放大产生突兀色
+        for (const id of ids) {
+          acc[c][id] += mL + R * (L[c][id] - mL);
+          if (c === 0) cnt[id] += 1;
+        }
+      }
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    const o = i * 4, k = cnt[i] || 1;
+    out[o] = acc[0][i] / k; out[o + 1] = acc[1][i] / k; out[o + 2] = acc[2][i] / k; out[o + 3] = 255;
+  }
+  return { width: gridW, height: gridH, data: out };
+}
+
+// 把感知缩放得到的每格 RGB 配到色卡，顺带处理抠图（按格内背景占比投票）。
+function perceptualCells(pd, gridW, gridH, srcW, srcH, bgMask, palette) {
+  const d = pd.data;
+  const result = [];
+  for (let gy = 0; gy < gridH; gy++) {
+    const y0 = Math.floor((gy * srcH) / gridH), y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * srcH) / gridH));
+    const row = [];
+    for (let gx = 0; gx < gridW; gx++) {
+      if (bgMask) {
+        const x0 = Math.floor((gx * srcW) / gridW), x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * srcW) / gridW));
+        let bg = 0, tot = 0;
+        for (let y = y0; y < y1; y++) { const base = y * srcW; for (let x = x0; x < x1; x++) { if (bgMask[base + x]) bg++; tot++; } }
+        if (bg / tot > 0.5) { row.push(null); continue; }
+      }
+      const o = (gy * gridW + gx) * 4;
+      row.push(nearestInPalette(d[o], d[o + 1], d[o + 2], palette));
+    }
+    result.push(row);
+  }
+  return result;
 }
 
 // Match every source pixel to its nearest Mard color individually (cached by

@@ -67,6 +67,30 @@
         <input type="range" id="fill-slider" min="0.3" max="1.0" step="0.05" value="1.0" />
 
         <div class="sub-group">
+          <span class="sub-title">像素画还原</span>
+          <label class="switch">
+            <input type="checkbox" id="pixel-restore" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">按原始分辨率还原<em>图本身就是像素画时，找回原尺寸后 1:1 取色，不缩放、不平均</em></span>
+          </label>
+          <div id="pixel-restore-detail" hidden>
+            <div class="custom-size">
+              <label for="pixel-native-w">原始尺寸</label>
+              <input type="number" id="pixel-native-w" min="1" max="256" step="1" placeholder="自动" aria-label="原始宽（像素）" />
+              <span class="hint">×</span>
+              <input type="number" id="pixel-native-h" min="1" max="256" step="1" placeholder="自动" aria-label="原始高（像素）" />
+              <button id="pixel-detect" class="btn-ghost">重新检测</button>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="pixel-anti-watermark" />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="switch-text">抗水印<em>每格按块内多数票定色，淘汰细线/半透明/小 logo 水印；盖满整格的水印无法还原</em></span>
+            </label>
+          </div>
+          <p class="hint" id="pixel-restore-note" hidden>开启后自动检测原始像素尺寸；检测不准就直接填你知道的尺寸。此模式下风格/卡通化不参与。</p>
+        </div>
+
+        <div class="sub-group">
           <span class="sub-title">可用色卡</span>
           <div class="seg" id="palette-scope">
             <button class="seg-btn active" data-scope="standard">标准 221 色<em>A–H、M 系列</em></button>
@@ -113,6 +137,11 @@
             <output id="dither-value">关闭（大色块）</output>
           </label>
           <input type="range" id="dither-slider" min="0" max="100" step="10" value="0" />
+          <label class="switch" style="margin-top:10px">
+            <input type="checkbox" id="perceptual-scale" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-text">感知缩放（名画）<em>按 SSIM 优化降采样，尽量保住"一眼看出原画"的对比与轮廓；生成略慢</em></span>
+          </label>
         </div>
       </div>
 
