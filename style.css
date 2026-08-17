@@ -340,6 +340,14 @@ button { font: inherit; cursor: pointer; }
 /* 模式面板里，直接作为分组标题的 sub-title 需要更像个小标题 */
 .control-group > .sub-title { font-size: 13.5px; font-weight: 650; color: var(--ink); margin-bottom: 10px; }
 #mode-switch .seg-btn { padding: 11px 8px; }
+
+/* 折叠的“高级微调” */
+details.adv { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 10px; }
+details.adv > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-2); list-style: none; user-select: none; }
+details.adv > summary::-webkit-details-marker { display: none; }
+details.adv > summary::before { content: "▸ "; color: var(--muted); }
+details.adv[open] > summary::before { content: "▾ "; }
+details.adv > summary:hover { color: var(--ink); }
 .sub-group .seg { margin-bottom: 8px; }
 .sub-group .hint { margin: 0; }
 

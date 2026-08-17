@@ -412,7 +412,7 @@ function clamp(v, lo, hi) {
 
 // 板子尺寸不再限定于 52/78/104 —— 那三个是标准拼豆板的整数倍，但很多人
 // 就是习惯拼 40×40 这样的尺寸，或者手上的板子本来就拼不出整数倍。
-const MIN_BOARD = 16, MAX_BOARD = 160;
+const MIN_BOARD = 1, MAX_BOARD = 160;
 const customWInput = document.getElementById("custom-size-w");
 const customHInput = document.getElementById("custom-size-h");
 
@@ -901,6 +901,22 @@ async function regenerate() {
     cells = removeSmallRegions(cells, gridW, gridH, minRegion);
   }
 
+  // 图案没占满整块板子时（画面占板比例 < 100%，或长宽比和板子不一致），把图案
+  // **居中**放进整块 boardW×boardH，四周补空格（不放豆）。这才是「画面占板比例」
+  // 的本意 —— 图案占板子的一部分、其余留白，而不是把整张图纸整体缩小。也让你能
+  // 在一块大板子的正中做一个小图案。
+  if (gridW < boardW || gridH < boardH) {
+    const offX = Math.floor((boardW - gridW) / 2);
+    const offY = Math.floor((boardH - gridH) / 2);
+    const padded = Array.from({ length: boardH }, () => new Array(boardW).fill(null));
+    for (let y = 0; y < gridH; y++)
+      for (let x = 0; x < gridW; x++)
+        padded[y + offY][x + offX] = cells[y][x];
+    cells = padded;
+    gridW = boardW;
+    gridH = boardH;
+  }
+
   // The grid may have changed shape, so cell coordinates held over from a
   // previous selection no longer point at the same beads. The highlighted
   // color may not even exist in the new pattern (a different palette scope
@@ -1243,32 +1259,73 @@ function despeckleIndices(indices, W, H) {
 }
 
 // ---------- 像素画原始分辨率检测 ----------
-// 放大过的像素画，其"原始像素块"的边界会在行/列方向形成规则的高频跳变，而
-// 块内部相邻的行/列只是同一批像素的副本、差异≈0。据此可反推原始尺寸：沿 x
-// 方向算每一列与前一列的平均色差 colE[x]（真正的块边界是尖峰，块内部是 0），
-// 再从最粗的网格往细里试各个"原始列数 N"。若某个 N 的网格边界（round(k*L/N)）
-// 几乎盖住了全部色差能量、块内几乎没有漏网的能量，这个 N 就是原始宽度。
-// 从小到大取第一个通过的 = 最粗的真实网格（原始分辨率本身，而不是它的整数倍）。
+// 无论是被放大的像素画，还是一张画好的拼豆图纸截图，它们在行/列方向都有一个
+// 稳定的“每格重复一次”的信号：图纸有网格线、每格还印着色号文字，放大的像素画
+// 则是块与块的边界。检测的就是这个**空间周期**。
 //
-// 用 tol=0（只认落在边界列上的能量）是关键：整数倍放大的像素画边界正好落在
-// round(k*L/N) 上，块内部相邻列是同一像素的副本、色差为 0，所以真正的原始
-// 网格能把几乎全部能量收进边界、块内几乎不漏；而普通照片"到处都是边"，任何
-// 比 L/2 粗的网格都会漏掉大量块内能量，于是判不出周期 → 返回 null（视作"不是
-// 放大的像素画"）。
-function detectAxisPeriod(E, L, offTol = 0.14, minBlock = 2, maxCandidate = 256) {
-  let total = 0;
-  for (let i = 0; i < L; i++) total += E[i];
-  if (total < 1e-9) return 1; // 这一轴完全平坦（如纯色），块大小无所谓，记 1
-  const maxN = Math.min(Math.floor(L / minBlock), maxCandidate);
-  for (let N = 2; N <= maxN; N++) {
-    let onGrid = 0;
-    for (let k = 1; k < N; k++) {
-      const b = Math.round((k * L) / N);
-      if (b >= 1 && b < L) onGrid += E[b];
-    }
-    if (1 - onGrid / total <= offTol) return N;
+// 做法是对“相邻列色差”信号 E 求**自相关**：把 E 平移 lag 后与自己相乘求和，
+// 若图案每隔 p 像素重复一次，则 lag = p、2p、3p… 处都会出现相关峰，其中 p
+// （最小的那个峰）就是一个格子的像素宽度，格数 N = round(L / p)。
+//
+// 相比旧的“边界命中”法，自相关对这类图纸稳得多：
+//   · 网格线在格边界、色号文字在格中心 —— 两者都是“每格一次”，周期同为 p，
+//     谁强都不影响求出 p（旧法会把两者错当成 2N）；
+//   · 水印、噪声是宽带的、不周期，几乎不产生相关峰；
+//   · 非整数缩放（p 不是整数）也只是峰落在最近的整数 lag 上，round 回去即可。
+// 普通照片没有稳定周期，最高相关峰也过不了门槛 → 返回 null，让用户手填。
+function detectAxisPeriod(E, L) {
+  // 去均值后求自相关（去均值让“到处都有的直流分量”不产生假相关）
+  let m = 0;
+  for (let i = 0; i < L; i++) m += E[i];
+  m /= L;
+  const c = new Float64Array(L);
+  let A0 = 0;
+  for (let i = 0; i < L; i++) { c[i] = E[i] - m; A0 += c[i] * c[i]; }
+  if (A0 < 1e-9) return 1; // 这一轴完全平坦
+
+  const pminAccept = 4;                        // 每格至少约 4px
+  const pmax = Math.floor(L / 8);              // 至少 8 格才算网格
+  if (pmax < pminAccept) return null;
+  const A = new Float64Array(pmax + 2);
+  for (let lag = 1; lag <= pmax + 1 && lag < L; lag++) {
+    let s = 0;
+    for (let x = 0; x + lag < L; x++) s += c[x] * c[x + lag];
+    A[lag] = s / A0;
   }
-  return null;
+
+  // 关键：只认**有卓立度的周期峰**，不认“光滑信号自相关一路很高”。周期信号的
+  // 自相关会震荡 —— 在 p 处是局部峰、峰前有个谷（半周期处的反相关）；而光滑的
+  // 渐变（照片天空这种）自相关是单调下滑、没有“谷→峰”的抬升。所以从小 lag 往上
+  // 扫，记录当前谷值，遇到第一个“局部极大且从谷抬升足够多、绝对值也够高”的 lag
+  // 就是基本周期 p。扫不到 → 判为不是网格 → null。
+  let p = 0, trough = A[1];
+  for (let lag = 2; lag <= pmax; lag++) {
+    if (A[lag] < trough) trough = A[lag];
+    const isLocalMax = A[lag] > A[lag - 1] && A[lag] >= A[lag + 1];
+    if (isLocalMax && lag >= pminAccept && A[lag] >= 0.3 && A[lag] - trough >= 0.06) {
+      p = lag; break;
+    }
+  }
+  if (!p) return null;
+
+  // 线在格边界、字在格中心时，边缘信号会呈现“线、字、线、字”的交替，最小重复
+  // 其实是半格。若 2p 处的相关峰比 p 还强（说明线比字强、真正一格是 2p），修正
+  // 到 2p。真正的基本周期，其 2 次谐波总是略弱，不会触发。
+  if (2 * p <= pmax && A[2 * p] > A[p]) p = 2 * p;
+
+  // 再验证“真的在以 p 为周期地震荡”：真网格在 p、2p、3p… 处都是峰，在它们之间
+  // 的半周期处是谷；而光滑渐变（含量子化条带）的自相关只是一路平滑，峰谷差很小。
+  // 用“梳状”对比把后者挡掉，避免把照片天空误判成网格。
+  let comb = 0, anti = 0, kc = 0;
+  for (let k = 1; k * p <= pmax && k <= 6; k++) {
+    comb += A[k * p];
+    const h = Math.round((k - 0.5) * p);
+    if (h >= 1 && h <= pmax) anti += A[h];
+    kc++;
+  }
+  if (kc === 0 || comb / kc - anti / kc < 0.12) return null;
+
+  return Math.max(1, Math.round(L / p));
 }
 
 function detectPixelArtNative(imageData) {
@@ -1293,21 +1350,10 @@ function detectPixelArtNative(imageData) {
     }
   }
   for (let y = 0; y < H; y++) rowE[y] /= W;
-  const nw = detectAxisPeriod(denoiseEdgeSignal(colE, W), W);
-  const nh = detectAxisPeriod(denoiseEdgeSignal(rowE, H), H);
+  const nw = detectAxisPeriod(colE, W);
+  const nh = detectAxisPeriod(rowE, H);
   if (!nw || !nh) return null;
   return { nw, nh, blockW: W / nw, blockH: H / nh };
-}
-
-// 去掉压缩/拍摄噪声形成的"能量地板"：像素画绝大多数行/列是块内部（色差≈基线
-// 噪声），只有少数块边界是尖峰。减掉中位数作为噪声地板后，块内部归零、边界
-// 依旧突出，检测才不会被 JPEG 噪点带偏（tol=0 对噪声很敏感，这一步是关键）。
-function denoiseEdgeSignal(E, L) {
-  const sorted = Array.from(E.subarray(0, L)).sort((a, b) => a - b);
-  const base = sorted[Math.floor(L * 0.5)]; // 中位数 = 噪声地板（块内部占多数）
-  const out = new Float64Array(L);
-  for (let i = 0; i < L; i++) out[i] = Math.max(0, E[i] - base);
-  return out;
 }
 
 // "contain" 装箱：在 bw×bh 的板子里尽量放大，保持画面比例不变形。
