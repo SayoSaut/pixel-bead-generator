@@ -58,10 +58,11 @@
         <div class="control-group">
           <span class="sub-title">板子规格</span>
           <div class="seg" id="board-options">
-            <button class="seg-btn" data-size="52">52×52</button>
-            <button class="seg-btn" data-size="78">78×78</button>
-            <button class="seg-btn" data-size="104">104×104</button>
+            <button class="seg-btn" data-size="52">52×52<em>约 26cm</em></button>
+            <button class="seg-btn" data-size="78">78×78<em>约 39cm</em></button>
+            <button class="seg-btn" data-size="104">104×104<em>约 52cm</em></button>
           </div>
+          <p class="hint">照片、画作板子越大越能看出细节；小板子上容易糊。</p>
           <div class="custom-size">
             <label for="custom-size-w">自定义</label>
             <input type="number" id="custom-size-w" min="1" max="160" step="1" placeholder="40" aria-label="宽（格）" />
@@ -94,7 +95,7 @@
             <label class="slider-label" for="sharpen-slider">结构增强<output id="sharpen-value">适中</output></label>
             <input type="range" id="sharpen-slider" min="0" max="4" step="1" value="2" />
             <label class="slider-label" for="vivid-slider">色彩强度<output id="vivid-value">原样</output></label>
-            <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
+            <input type="range" id="vivid-slider" min="100" max="260" step="10" value="100" />
             <label class="slider-label" for="contrast-slider">明暗对比<output id="contrast-value">原样</output></label>
             <input type="range" id="contrast-slider" min="0" max="100" step="10" value="0" />
             <label class="slider-label" for="dither-slider">混色抖动<output id="dither-value">关闭</output></label>

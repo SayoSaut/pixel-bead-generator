@@ -519,10 +519,13 @@ ditherSlider.addEventListener("input", () => { syncDetailLabels(); regenerate();
 // 上面这些旋钮单独调都有意义，但"我想要那种卡通插画的效果"是一个整体诉求：
 // 它同时要求压平区块、拉开明暗、提高彩度、减少颜色。逐个去试很难碰对组合，
 // 所以直接给出几套调好的。
+// 画作（尤其莫奈这种灰调油画）缩到几千格后最大的毛病是"发灰、认不出"：明度
+// 被压扁、彩度本来就低。所以插画/海报两档默认就把彩度、明暗对比、结构增强、
+// 感知缩放一起开足 —— 目的是"一眼看出原画"，而不是忠实复刻那片灰。
 const STYLE_PRESETS = {
-  faithful:     { simplify: 1, structure: 1, vivid: 100, contrast: 0,   dither: 0 },
-  illustration: { simplify: 2, structure: 3, vivid: 150, contrast: 70,  dither: 0 },
-  poster:       { simplify: 3, structure: 4, vivid: 180, contrast: 100, dither: 0 },
+  faithful:     { simplify: 1, structure: 1, vivid: 115, contrast: 15,  dither: 0, perceptual: false },
+  illustration: { simplify: 2, structure: 3, vivid: 180, contrast: 70,  dither: 0, perceptual: true },
+  poster:       { simplify: 3, structure: 4, vivid: 210, contrast: 95,  dither: 0, perceptual: true },
 };
 
 document.querySelectorAll(".style-btn").forEach((btn) => {
@@ -535,6 +538,7 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
     vividSlider.value = preset.vivid;
     contrastSlider.value = preset.contrast;
     ditherSlider.value = preset.dither;
+    if (perceptualCheckbox) perceptualCheckbox.checked = !!preset.perceptual;
     syncSimplifyLabel();
     syncDetailLabels();
     regenerate();
