@@ -101,6 +101,11 @@
             <label class="slider-label" for="dither-slider">混色抖动<output id="dither-value">关闭</output></label>
             <input type="range" id="dither-slider" min="0" max="100" step="10" value="0" />
             <label class="switch" style="margin-top:10px">
+              <input type="checkbox" id="abstract-blocks" />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="switch-text">大色块概括<em>保边分割，归并成干净大色块又保住主体</em></span>
+            </label>
+            <label class="switch" style="margin-top:10px">
               <input type="checkbox" id="perceptual-scale" />
               <span class="switch-track"><span class="switch-thumb"></span></span>
               <span class="switch-text">感知缩放（名画）</span>

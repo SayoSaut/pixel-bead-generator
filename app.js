@@ -48,6 +48,7 @@ const pixelNativeHInput = document.getElementById("pixel-native-h");
 const pixelDetectBtn = document.getElementById("pixel-detect");
 const pixelRestoreNote = document.getElementById("pixel-restore-note");
 const perceptualCheckbox = document.getElementById("perceptual-scale");
+const abstractCheckbox = document.getElementById("abstract-blocks");
 let pixelRestore = false;         // 是否处于还原模式
 let pixelRestoreManual = false;   // 用户是否手填了原始尺寸（填了就以他为准，不再自动检测）
 let pixelRestoreW = null, pixelRestoreH = null;
@@ -523,9 +524,9 @@ ditherSlider.addEventListener("input", () => { syncDetailLabels(); regenerate();
 // 被压扁、彩度本来就低。所以插画/海报两档默认就把彩度、明暗对比、结构增强、
 // 感知缩放一起开足 —— 目的是"一眼看出原画"，而不是忠实复刻那片灰。
 const STYLE_PRESETS = {
-  faithful:     { simplify: 1, structure: 1, vivid: 115, contrast: 15,  dither: 0, perceptual: false },
-  illustration: { simplify: 2, structure: 3, vivid: 180, contrast: 70,  dither: 0, perceptual: true },
-  poster:       { simplify: 3, structure: 4, vivid: 210, contrast: 95,  dither: 0, perceptual: true },
+  faithful:     { simplify: 1, structure: 1, vivid: 115, contrast: 15,  dither: 0, perceptual: false, abstract: false },
+  illustration: { simplify: 2, structure: 3, vivid: 180, contrast: 60,  dither: 0, perceptual: false, abstract: true },
+  poster:       { simplify: 3, structure: 4, vivid: 210, contrast: 80,  dither: 0, perceptual: false, abstract: true },
 };
 
 document.querySelectorAll(".style-btn").forEach((btn) => {
@@ -539,6 +540,7 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
     contrastSlider.value = preset.contrast;
     ditherSlider.value = preset.dither;
     if (perceptualCheckbox) perceptualCheckbox.checked = !!preset.perceptual;
+    if (abstractCheckbox) abstractCheckbox.checked = !!preset.abstract;
     syncSimplifyLabel();
     syncDetailLabels();
     regenerate();
@@ -608,6 +610,9 @@ for (const input of [pixelNativeWInput, pixelNativeHInput]) {
 }
 if (perceptualCheckbox) {
   perceptualCheckbox.addEventListener("change", regenerate);
+}
+if (abstractCheckbox) {
+  abstractCheckbox.addEventListener("change", regenerate);
 }
 
 // ---------- Kuwahara: 按区块压平，只留边界 ----------
@@ -815,13 +820,22 @@ async function regenerate() {
   const factor = superSample ? 2 : 1;
   const cap = Math.max(200, Math.max(boardW, boardH) * factor * samplesPerCell);
   const rawIntermediate = prepareIntermediate(sourceImage, cropRect, allowRect, cap);
-  const imageData = enhanceImageData(
+  let imageData = enhanceImageData(
     rawIntermediate,
     structureSetting(),
     vividAmount(),
     contrastAmount()
   );
   const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, boardW * factor, boardH * factor, fillRatio);
+
+  // 大色块概括（保边分割）：把画面归并成干净的大色块，同时保住主体。放在配色
+  // 之前 —— 让后面的限色/配色在已经干净的大块上做。
+  const abstractOn = (abstractCheckbox && abstractCheckbox.checked) || window.__abstract;
+  if (abstractOn) {
+    const lvl = parseInt(simplifySlider.value, 10) || 0;
+    const strength = window.__abstractStrength != null ? window.__abstractStrength : (0.3 + 0.11 * lvl);
+    imageData = abstractToSegments(imageData, sourceGridW, sourceGridH, strength);
+  }
 
   // Simplification level drives BOTH halves of the cartoonify treatment:
   // how many colors the picture may use at all, and how big a patch has to
@@ -1358,6 +1372,123 @@ function detectPixelArtNative(imageData) {
   const nh = detectAxisPeriod(rowE, H);
   if (!nw || !nh) return null;
   return { nw, nh, blockW: W / nw, blockH: H / nh };
+}
+
+// ---------- 大色块概括（保边分割 · Felzenszwalb-Huttenlocher） ----------
+// 把画面"大刀阔斧地概括"成一片片干净的大色块，是名画/插画一眼认得出的关键。
+// 单纯的少色 + 区块归并会把主体也一起并掉（灰裙子并进灰天空、人就没了）；这里
+// 用基于图的保边分割：把每个像素看成图的节点、相邻像素的色差当边权，从最小的
+// 边开始合并，只有当"跨过这条边的色差"不比两侧区块**内部**已有的差异大多少时
+// 才合并（阈值随区块变大而收紧）。于是同一片天空/草地被合成一大块，而主体和
+// 背景之间那条真正的明暗边界始终跨不过去 —— 大块归大块，人还在。
+//
+// 每个像素随后取所在区块的平均色，喂给后面的限色/配色，就得到干净的大色块。
+function felzenszwalbSegment(data, W, H, scale, minSize) {
+  const n = W * H;
+  const diff = (a, b) => {
+    const oa = a * 4, ob = b * 4;
+    const dr = data[oa] - data[ob], dg = data[oa + 1] - data[ob + 1], db = data[oa + 2] - data[ob + 2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  };
+  // 边：右、下、右下、左下（8 邻接的一半，够用且不重复）
+  const ex = [], ey = [], ew = [];
+  const push = (a, b) => { ex.push(a); ey.push(b); ew.push(diff(a, b)); };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const p = y * W + x;
+      if (x < W - 1) push(p, p + 1);
+      if (y < H - 1) push(p, p + W);
+      if (x < W - 1 && y < H - 1) push(p, p + W + 1);
+      if (x > 0 && y < H - 1) push(p, p + W - 1);
+    }
+  }
+  const order = Array.from(ew.keys()).sort((i, j) => ew[i] - ew[j]);
+  const parent = new Int32Array(n), size = new Int32Array(n), intd = new Float64Array(n);
+  for (let i = 0; i < n; i++) { parent[i] = i; size[i] = 1; }
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (const e of order) {
+    let ra = find(ex[e]), rb = find(ey[e]);
+    if (ra === rb) continue;
+    const w = ew[e];
+    if (w <= Math.min(intd[ra] + scale / size[ra], intd[rb] + scale / size[rb])) {
+      if (size[ra] < size[rb]) { const t = ra; ra = rb; rb = t; }
+      parent[rb] = ra; size[ra] += size[rb]; intd[ra] = Math.max(intd[ra], intd[rb], w);
+    }
+  }
+  // 收尾：把过小的区块并进相邻区块（无论色差）
+  for (const e of order) {
+    let ra = find(ex[e]), rb = find(ey[e]);
+    if (ra !== rb && (size[ra] < minSize || size[rb] < minSize)) {
+      if (size[ra] < size[rb]) { const t = ra; ra = rb; rb = t; }
+      parent[rb] = ra; size[ra] += size[rb];
+    }
+  }
+  const labels = new Int32Array(n);
+  for (let i = 0; i < n; i++) labels[i] = find(i);
+  return labels;
+}
+
+// 3×3 盒式模糊，分割前先抹掉一点笔触噪声（否则碎笔触会挡住区块合并）。
+function boxBlur3(data, W, H) {
+  const out = new Uint8ClampedArray(data.length);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy; if (yy < 0 || yy >= H) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx; if (xx < 0 || xx >= W) continue;
+          const o = (yy * W + xx) * 4; r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
+        }
+      }
+      const o = (y * W + x) * 4;
+      out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n; out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+// 把图像概括成大色块：控制在 ~360px 长边上跑分割（更快，且区块尺度稳定），
+// 每个像素换成所在区块的平均色，再放回原尺寸。strength 0..1 调区块大小。
+function abstractToSegments(imageData, gridW, gridH, strength) {
+  const { width: W, height: H } = imageData;
+  // 在接近板子的分辨率上跑分割（~2px/格），区块尺度才和格子对得上
+  const cap = (window.__absCap != null ? window.__absCap : 2) * Math.max(gridW, gridH);
+  const s = Math.min(1, cap / Math.max(W, H));
+  const w = Math.max(gridW, Math.round(W * s)), h = Math.max(gridH, Math.round(H * s));
+  // 缩到工作分辨率
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = true;
+  const src = document.createElement("canvas"); src.width = W; src.height = H;
+  src.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(imageData.data), W, H), 0, 0);
+  cx.drawImage(src, 0, 0, w, h);
+  const small = cx.getImageData(0, 0, w, h).data;
+  const blurred = boxBlur3(small, w, h);
+  // scale 是**颜色距离**阈值（不随分辨率放大）：越大区块越大。minSize 按每格
+  // 像素数定，保证过小的碎块被并掉。
+  const ppc = (w / gridW) * (h / gridH);
+  const scale = window.__absScale != null ? window.__absScale : (35 + 70 * strength);
+  const minSize = window.__absMin != null ? window.__absMin : Math.max(4, Math.round(ppc * (0.8 + 2.5 * strength)));
+  const labels = felzenszwalbSegment(blurred, w, h, scale, minSize);
+  // 区块平均色（用未模糊的 small，颜色更实）
+  const nseg = w * h;
+  const sr = new Float64Array(nseg), sg = new Float64Array(nseg), sb = new Float64Array(nseg), sc = new Float64Array(nseg);
+  for (let i = 0; i < w * h; i++) {
+    const L = labels[i], o = i * 4;
+    sr[L] += small[o]; sg[L] += small[o + 1]; sb[L] += small[o + 2]; sc[L]++;
+  }
+  const segImg = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const L = labels[i], o = i * 4, c = sc[L] || 1;
+    segImg[o] = sr[L] / c; segImg[o + 1] = sg[L] / c; segImg[o + 2] = sb[L] / c; segImg[o + 3] = 255;
+  }
+  // 放回原尺寸（最近邻，保持色块边界锐利）
+  const scv = document.createElement("canvas"); scv.width = w; scv.height = h;
+  scv.getContext("2d").putImageData(new ImageData(segImg, w, h), 0, 0);
+  cv.width = W; cv.height = H;
+  const cx2 = cv.getContext("2d"); cx2.imageSmoothingEnabled = false;
+  cx2.drawImage(scv, 0, 0, W, H);
+  return cx2.getImageData(0, 0, W, H);
 }
 
 // "contain" 装箱：在 bw×bh 的板子里尽量放大，保持画面比例不变形。
