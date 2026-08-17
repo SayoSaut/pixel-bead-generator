@@ -39,19 +39,19 @@ const cutoutEnabledCheckbox = document.getElementById("cutout-enabled");
 const cutoutToleranceSlider = document.getElementById("cutout-tolerance");
 const cutoutToleranceValue = document.getElementById("cutout-tolerance-value");
 
-// ---------- 像素画还原（按原始分辨率 1:1 取色） ----------
-const pixelRestoreCheckbox = document.getElementById("pixel-restore");
-const pixelRestoreDetail = document.getElementById("pixel-restore-detail");
+// ---------- 两种模式：图片转图纸 / 还原像素画 ----------
+const modeSwitch = document.getElementById("mode-switch");
+const modeConvert = document.getElementById("mode-convert");
+const modeRestore = document.getElementById("mode-restore");
 const pixelNativeWInput = document.getElementById("pixel-native-w");
 const pixelNativeHInput = document.getElementById("pixel-native-h");
 const pixelDetectBtn = document.getElementById("pixel-detect");
 const pixelRestoreNote = document.getElementById("pixel-restore-note");
-const pixelAntiWatermarkCheckbox = document.getElementById("pixel-anti-watermark");
 const perceptualCheckbox = document.getElementById("perceptual-scale");
-let pixelRestore = false;         // 模式开关
+let pixelRestore = false;         // 是否处于还原模式
 let pixelRestoreManual = false;   // 用户是否手填了原始尺寸（填了就以他为准，不再自动检测）
 let pixelRestoreW = null, pixelRestoreH = null;
-let pixelRestoreSavedBoard = null; // 进入还原前的板子尺寸，关掉时还原回去
+let pixelRestoreSavedBoard = null; // 进入还原前的板子尺寸，切回转换模式时还原回去
 let pixelDetectCache = null;      // 按裁剪区签名缓存检测结果，避免每次调滑块都重算
 
 // Quadratic ease-in: most of the slider's travel covers the low end, where
@@ -558,25 +558,31 @@ function applyPixelNative() {
     regenerate();
   }
 }
-if (pixelRestoreCheckbox) {
-  pixelRestoreCheckbox.addEventListener("change", () => {
-    pixelRestore = pixelRestoreCheckbox.checked;
-    if (pixelRestoreDetail) pixelRestoreDetail.hidden = !pixelRestore;
-    if (pixelRestoreNote) pixelRestoreNote.hidden = !pixelRestore;
-    if (pixelRestore) {
-      // 还原会把板子尺寸改成原始分辨率；先记住原来的板子，关掉时好还原回去
-      pixelRestoreSavedBoard = { w: boardW, h: boardH };
-      // 每次开启都从自动检测开始；用户如已手填过就沿用
-      if (!pixelRestoreManual) { pixelRestoreW = pixelRestoreH = null; }
-      setPixelRestoreNote("正在按原始像素尺寸还原…");
-    } else {
-      setMlStatus("");
-      if (pixelRestoreSavedBoard) {
-        boardW = pixelRestoreSavedBoard.w; boardH = pixelRestoreSavedBoard.h;
-        boardSize = Math.max(boardW, boardH);
-      }
+function setMode(mode) {
+  pixelRestore = (mode === "restore");
+  if (modeConvert) modeConvert.hidden = pixelRestore;
+  if (modeRestore) modeRestore.hidden = !pixelRestore;
+  if (modeSwitch) [...modeSwitch.children].forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  if (pixelRestore) {
+    // 还原会把板子尺寸改成原始分辨率；先记住原来的板子，切回转换模式时还原回去
+    pixelRestoreSavedBoard = { w: boardW, h: boardH };
+    if (!pixelRestoreManual) { pixelRestoreW = pixelRestoreH = null; }
+    // 有图时 regenerate() 会同步把检测结果写进 note；无图就先别显示误导文字
+    if (pixelRestoreNote) pixelRestoreNote.hidden = true;
+  } else {
+    setMlStatus("");
+    if (pixelRestoreSavedBoard) {
+      boardW = pixelRestoreSavedBoard.w; boardH = pixelRestoreSavedBoard.h;
+      boardSize = Math.max(boardW, boardH);
     }
-    regenerate();
+  }
+  regenerate();
+}
+if (modeSwitch) {
+  modeSwitch.addEventListener("click", (e) => {
+    const btn = e.target.closest(".seg-btn");
+    if (!btn) return;
+    setMode(btn.dataset.mode);
   });
 }
 if (pixelDetectBtn) {
@@ -595,9 +601,6 @@ for (const input of [pixelNativeWInput, pixelNativeHInput]) {
     if (evt.key === "Enter") { evt.preventDefault(); applyPixelNative(); }
   });
   input.addEventListener("change", applyPixelNative);
-}
-if (pixelAntiWatermarkCheckbox) {
-  pixelAntiWatermarkCheckbox.addEventListener("change", regenerate);
 }
 if (perceptualCheckbox) {
   perceptualCheckbox.addEventListener("change", regenerate);
@@ -1014,18 +1017,15 @@ async function regeneratePixelRestore() {
 
   const palette = scopedPalette();
 
-  // 取样分辨率：默认一格一原始像素（sw=nw, sh=nh），最近邻让每格落在一个像素
-  // 块内部、取到的就是那个像素的原色，不平均不插值。开启「抗水印」时改为在更高
-  // 分辨率上取样，让每格覆盖多个原始像素，再按块内多数票定色 —— 细线、半透明、
-  // 小 logo 这类水印在一格里是少数像素，会被投票淘汰，露出底下原色。
-  const antiWM = pixelAntiWatermarkCheckbox && pixelAntiWatermarkCheckbox.checked;
-  let sw = nw, sh = nh;
-  if (antiWM) {
-    const c = cropNativeSize(allowRect);
-    const os = clamp(Math.round(900 / Math.max(nw, nh)), 2, 12); // 每格约 os×os 个采样
-    sw = Math.min(nw * os, Math.max(nw, c.w));
-    sh = Math.min(nh * os, Math.max(nh, c.h));
-  }
+  // 每格按“块内多数色”定色，而不是只取一个像素。这样每格里的网格线、印在格子
+  // 上的色号文字、半透明水印这些都是少数像素，会被多数票淘汰，露出真正的底色；
+  // 干净的像素画则正好取到那块的纯色 —— 既精准又抗杂点/水印。为此在尽量高的
+  // 分辨率上取样，让每格覆盖足够多的原始像素来投票。
+  const c = cropNativeSize(allowRect);
+  const cap = 1600;
+  const sc = Math.min(1, cap / Math.max(c.w, c.h));
+  const sw = Math.max(nw, Math.round(c.w * sc));
+  const sh = Math.max(nh, Math.round(c.h * sc));
   const sample = sampleRegion(sourceImage, cropRect, allowRect, sw, sh);
 
   // 抠图（可选）：沿用主流程三种方式，尺寸换成当前取样网格。
@@ -1057,26 +1057,10 @@ async function regeneratePixelRestore() {
     }
   }
 
-  let cells;
-  if (antiWM) {
-    // 每个采样像素先配到色卡，再在每格里取出现最多的色号（复用 blockModeQuantize
-    // 的纯众数分支）—— 水印那点少数像素自然被多数票淘汰。
-    const idx = quantizeIndices(sample, palette);
-    cells = blockModeQuantize(idx, sw, sh, nw, nh, bgMask, {});
-  } else {
-    const data = sample.data;
-    cells = [];
-    for (let gy = 0; gy < nh; gy++) {
-      const row = [];
-      for (let gx = 0; gx < nw; gx++) {
-        const p = gy * nw + gx;
-        if (bgMask && bgMask[p]) { row.push(null); continue; }
-        const o = p * 4;
-        row.push(nearestInPalette(data[o], data[o + 1], data[o + 2], palette));
-      }
-      cells.push(row);
-    }
-  }
+  // 每个采样像素先配到色卡，再在每格里取出现最多的色号（复用 blockModeQuantize
+  // 的纯众数分支）。
+  const idx = quantizeIndices(sample, palette);
+  const cells = blockModeQuantize(idx, sw, sh, nw, nh, bgMask, {});
 
   boardW = nw; boardH = nh; boardSize = Math.max(nw, nh);
   editorSelection = new Set();
@@ -1097,7 +1081,7 @@ async function regeneratePixelRestore() {
     ["还原尺寸", `${nw}×${nh}`, nw > 160 || nh > 160 ? "超常规板" : "格"],
     ["用色", `${sorted.length}`, "种"],
     ["总豆数", `${total}`, "颗"],
-    ["模式", "像素还原", useCutout ? "已抠图" : (antiWM ? "抗水印" : "1:1")],
+    ["模式", "像素还原", useCutout ? "已抠图" : "多数色"],
   ]);
 
   exportPngBtn.disabled = false;

@@ -46,103 +46,108 @@
       </div>
 
       <div class="control-group">
-        <div class="step"><span class="step-num">3</span><label>板子规格</label></div>
-        <div class="seg" id="board-options">
-          <button class="seg-btn" data-size="52">52×52<em>2×2 块</em></button>
-          <button class="seg-btn" data-size="78">78×78<em>3×3 块</em></button>
-          <button class="seg-btn" data-size="104">104×104<em>4×4 块</em></button>
+        <div class="step"><span class="step-num">3</span><label>做什么</label></div>
+        <div class="seg" id="mode-switch">
+          <button class="seg-btn active" data-mode="convert">图片转图纸<em>照片、插画、名画</em></button>
+          <button class="seg-btn" data-mode="restore">还原像素画<em>本身就是像素图/图纸</em></button>
         </div>
-        <div class="custom-size">
-          <label for="custom-size-w">自定义</label>
-          <input type="number" id="custom-size-w" min="16" max="160" step="1" placeholder="40" aria-label="宽（格）" />
-          <span class="hint">×</span>
-          <input type="number" id="custom-size-h" min="16" max="160" step="1" placeholder="35" aria-label="高（格）" />
-          <span class="hint">格</span>
-          <button id="custom-size-apply" class="btn-ghost">应用</button>
-        </div>
-        <label class="slider-label" for="fill-slider">
-          画面占板比例
-          <output id="fill-value">100%</output>
-        </label>
-        <input type="range" id="fill-slider" min="0.3" max="1.0" step="0.05" value="1.0" />
+      </div>
 
-        <div class="sub-group">
-          <span class="sub-title">像素画还原</span>
-          <label class="switch">
-            <input type="checkbox" id="pixel-restore" />
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-            <span class="switch-text">按原始分辨率还原<em>图本身就是像素画时，找回原尺寸后 1:1 取色，不缩放、不平均</em></span>
+      <!-- 转换模式：板子 + 风格 -->
+      <div id="mode-convert">
+        <div class="control-group">
+          <span class="sub-title">板子规格</span>
+          <div class="seg" id="board-options">
+            <button class="seg-btn" data-size="52">52×52<em>2×2 块</em></button>
+            <button class="seg-btn" data-size="78">78×78<em>3×3 块</em></button>
+            <button class="seg-btn" data-size="104">104×104<em>4×4 块</em></button>
+          </div>
+          <div class="custom-size">
+            <label for="custom-size-w">自定义</label>
+            <input type="number" id="custom-size-w" min="16" max="160" step="1" placeholder="40" aria-label="宽（格）" />
+            <span class="hint">×</span>
+            <input type="number" id="custom-size-h" min="16" max="160" step="1" placeholder="35" aria-label="高（格）" />
+            <span class="hint">格</span>
+            <button id="custom-size-apply" class="btn-ghost">应用</button>
+          </div>
+          <label class="slider-label" for="fill-slider">
+            画面占板比例
+            <output id="fill-value">100%</output>
           </label>
-          <div id="pixel-restore-detail" hidden>
-            <div class="custom-size">
-              <label for="pixel-native-w">原始尺寸</label>
-              <input type="number" id="pixel-native-w" min="1" max="256" step="1" placeholder="自动" aria-label="原始宽（像素）" />
-              <span class="hint">×</span>
-              <input type="number" id="pixel-native-h" min="1" max="256" step="1" placeholder="自动" aria-label="原始高（像素）" />
-              <button id="pixel-detect" class="btn-ghost">重新检测</button>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="pixel-anti-watermark" />
+          <input type="range" id="fill-slider" min="0.3" max="1.0" step="0.05" value="1.0" />
+        </div>
+
+        <div class="control-group">
+          <span class="sub-title">画面风格</span>
+          <div class="seg" id="style-presets">
+            <button class="seg-btn style-btn" data-style="faithful">忠实<em>照片、像素图</em></button>
+            <button class="seg-btn style-btn" data-style="illustration">插画<em>油画、厚涂</em></button>
+            <button class="seg-btn style-btn" data-style="poster">海报<em>大色块、强对比</em></button>
+          </div>
+          <p class="hint">预设会一次调好下面几项。也可以选完再单独微调。</p>
+          <label class="slider-label" for="simplify-slider">
+            卡通化
+            <output id="simplify-value">中等 · 卡通化</output>
+          </label>
+          <input type="range" id="simplify-slider" min="0" max="4" step="1" value="2" />
+
+          <div class="sub-group">
+            <span class="sub-title">细节与色彩补偿</span>
+            <p class="hint">板子越小、原图笔触越碎，越需要往上调。结构增强会把每个色块内部压成一片，同时把区块之间的界限推得更清楚。</p>
+            <label class="slider-label" for="sharpen-slider">
+              结构增强<span class="hint"> · 区块内压平、边界变利</span>
+              <output id="sharpen-value">适中</output>
+            </label>
+            <input type="range" id="sharpen-slider" min="0" max="4" step="1" value="2" />
+            <label class="slider-label" for="vivid-slider">
+              色彩强度
+              <output id="vivid-value">原样</output>
+            </label>
+            <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
+            <label class="slider-label" for="contrast-slider">
+              明暗对比<span class="hint"> · 把压扁的明度拉开</span>
+              <output id="contrast-value">原样</output>
+            </label>
+            <input type="range" id="contrast-slider" min="0" max="100" step="10" value="0" />
+            <label class="slider-label" for="dither-slider">
+              混色抖动<span class="hint"> · 平坦区两色穿插，边界不动</span>
+              <output id="dither-value">关闭（大色块）</output>
+            </label>
+            <input type="range" id="dither-slider" min="0" max="100" step="10" value="0" />
+            <label class="switch" style="margin-top:10px">
+              <input type="checkbox" id="perceptual-scale" />
               <span class="switch-track"><span class="switch-thumb"></span></span>
-              <span class="switch-text">抗水印<em>每格按块内多数票定色，淘汰细线/半透明/小 logo 水印；盖满整格的水印无法还原</em></span>
+              <span class="switch-text">感知缩放（名画）<em>按 SSIM 优化降采样，尽量保住"一眼看出原画"的对比与轮廓；生成略慢</em></span>
             </label>
           </div>
-          <p class="hint" id="pixel-restore-note" hidden>开启后自动检测原始像素尺寸；检测不准就直接填你知道的尺寸。此模式下风格/卡通化不参与。</p>
         </div>
+      </div>
 
-        <div class="sub-group">
-          <span class="sub-title">可用色卡</span>
-          <div class="seg" id="palette-scope">
-            <button class="seg-btn active" data-scope="standard">标准 221 色<em>A–H、M 系列</em></button>
-            <button class="seg-btn" data-scope="full">完整 291 色<em>+P/Q/R/T/Y/ZG</em></button>
+      <!-- 还原模式：原始尺寸 -->
+      <div id="mode-restore" hidden>
+        <div class="control-group">
+          <span class="sub-title">原始尺寸</span>
+          <p class="hint">自动找回这张像素画／图纸的原始网格，按原尺寸还原。每格按“块内多数色”定色 —— 印在格子上的色号、网格线、半透明水印都是少数像素，会被淘汰，取到真正的底色。</p>
+          <div class="custom-size">
+            <label for="pixel-native-w">尺寸</label>
+            <input type="number" id="pixel-native-w" min="1" max="256" step="1" placeholder="自动" aria-label="原始宽（格）" />
+            <span class="hint">×</span>
+            <input type="number" id="pixel-native-h" min="1" max="256" step="1" placeholder="自动" aria-label="原始高（格）" />
+            <span class="hint">格</span>
+            <button id="pixel-detect" class="btn-ghost">检测</button>
           </div>
-          <p class="hint">零售套装多为标准 221 色，扩展系列通常要单独买。</p>
+          <p class="hint">已经知道格数（比如图纸上印着 <span class="mono">42×53</span>）就直接填进去，最准。裁剪框请只框住网格本身，别把行列号和图例框进来。</p>
+          <p class="hint" id="pixel-restore-note" hidden></p>
         </div>
       </div>
 
       <div class="control-group">
-        <div class="step"><span class="step-num">4</span><label for="simplify-slider">画面风格</label></div>
-        <div class="seg" id="style-presets">
-          <button class="seg-btn style-btn" data-style="faithful">忠实<em>照片、像素图</em></button>
-          <button class="seg-btn style-btn" data-style="illustration">插画<em>油画、厚涂</em></button>
-          <button class="seg-btn style-btn" data-style="poster">海报<em>大色块、强对比</em></button>
+        <div class="step"><span class="step-num">4</span><label>可用色卡</label></div>
+        <div class="seg" id="palette-scope">
+          <button class="seg-btn active" data-scope="standard">标准 221 色<em>A–H、M 系列</em></button>
+          <button class="seg-btn" data-scope="full">完整 291 色<em>+P/Q/R/T/Y/ZG</em></button>
         </div>
-        <p class="hint">预设会一次调好下面四项。也可以选完再单独微调。</p>
-        <label class="slider-label" for="simplify-slider">
-          卡通化
-          <output id="simplify-value">中等 · 卡通化</output>
-        </label>
-        <input type="range" id="simplify-slider" min="0" max="4" step="1" value="2" />
-
-        <div class="sub-group">
-          <span class="sub-title">细节与色彩补偿</span>
-          <p class="hint">板子越小、原图笔触越碎，越需要往上调。结构增强会把每个色块内部压成一片，同时把区块之间的界限推得更清楚。</p>
-          <label class="slider-label" for="sharpen-slider">
-            结构增强<span class="hint"> · 区块内压平、边界变利</span>
-            <output id="sharpen-value">适中</output>
-          </label>
-          <input type="range" id="sharpen-slider" min="0" max="4" step="1" value="2" />
-          <label class="slider-label" for="vivid-slider">
-            色彩强度
-            <output id="vivid-value">原样</output>
-          </label>
-          <input type="range" id="vivid-slider" min="100" max="220" step="10" value="100" />
-          <label class="slider-label" for="contrast-slider">
-            明暗对比<span class="hint"> · 把压扁的明度拉开</span>
-            <output id="contrast-value">原样</output>
-          </label>
-          <input type="range" id="contrast-slider" min="0" max="100" step="10" value="0" />
-          <label class="slider-label" for="dither-slider">
-            混色抖动<span class="hint"> · 平坦区两色穿插，边界不动</span>
-            <output id="dither-value">关闭（大色块）</output>
-          </label>
-          <input type="range" id="dither-slider" min="0" max="100" step="10" value="0" />
-          <label class="switch" style="margin-top:10px">
-            <input type="checkbox" id="perceptual-scale" />
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-            <span class="switch-text">感知缩放（名画）<em>按 SSIM 优化降采样，尽量保住"一眼看出原画"的对比与轮廓；生成略慢</em></span>
-          </label>
-        </div>
+        <p class="hint">零售套装多为标准 221 色，扩展系列通常要单独买。</p>
       </div>
 
       <div class="control-group">

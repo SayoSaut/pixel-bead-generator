@@ -337,6 +337,9 @@ button { font: inherit; cursor: pointer; }
   color: var(--ink-2);
   margin-bottom: 8px;
 }
+/* 模式面板里，直接作为分组标题的 sub-title 需要更像个小标题 */
+.control-group > .sub-title { font-size: 13.5px; font-weight: 650; color: var(--ink); margin-bottom: 10px; }
+#mode-switch .seg-btn { padding: 11px 8px; }
 .sub-group .seg { margin-bottom: 8px; }
 .sub-group .hint { margin: 0; }
 
