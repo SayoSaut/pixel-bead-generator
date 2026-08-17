@@ -478,6 +478,9 @@ const contrastSlider = document.getElementById("contrast-slider");
 const contrastValue = document.getElementById("contrast-value");
 const ditherSlider = document.getElementById("dither-slider");
 const ditherValue = document.getElementById("dither-value");
+const conceptSlider = document.getElementById("concept-slider");
+const conceptValue = document.getElementById("concept-value");
+function conceptAmount() { return conceptSlider ? (parseInt(conceptSlider.value, 10) || 0) / 100 : 0; }
 
 // radius 决定"多大范围算一个区块"，passes 决定压得多死，sharpen 是压平之后
 // 补的一点边界强调。
@@ -509,12 +512,14 @@ function syncDetailLabels() {
   contrastValue.textContent = cst <= 0.001 ? "原样" : `${Math.round(cst * 100)}%`;
   const dth = ditherAmount();
   ditherValue.textContent = dth <= 0.001 ? "关闭（大色块）" : `${Math.round(dth * 100)}%`;
+  if (conceptValue) { const c = conceptAmount(); conceptValue.textContent = c <= 0.001 ? "关闭" : `${Math.round(c * 100)}%`; }
 }
 syncDetailLabels();
 sharpenSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 vividSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 contrastSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 ditherSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
+if (conceptSlider) conceptSlider.addEventListener("input", () => { syncDetailLabels(); regenerate(); });
 
 // ---------- 风格预设 ----------
 // 上面这些旋钮单独调都有意义，但"我想要那种卡通插画的效果"是一个整体诉求：
@@ -524,9 +529,9 @@ ditherSlider.addEventListener("input", () => { syncDetailLabels(); regenerate();
 // 被压扁、彩度本来就低。所以插画/海报两档默认就把彩度、明暗对比、结构增强、
 // 感知缩放一起开足 —— 目的是"一眼看出原画"，而不是忠实复刻那片灰。
 const STYLE_PRESETS = {
-  faithful:     { simplify: 1, structure: 1, vivid: 115, contrast: 15,  dither: 0, perceptual: false, abstract: false },
-  illustration: { simplify: 2, structure: 3, vivid: 180, contrast: 60,  dither: 0, perceptual: false, abstract: true },
-  poster:       { simplify: 3, structure: 4, vivid: 210, contrast: 80,  dither: 0, perceptual: false, abstract: true },
+  faithful:     { simplify: 1, structure: 1, vivid: 115, contrast: 15,  dither: 0, concept: 0,  perceptual: false, abstract: false },
+  illustration: { simplify: 2, structure: 3, vivid: 160, contrast: 55,  dither: 0, concept: 45, perceptual: false, abstract: true },
+  poster:       { simplify: 3, structure: 4, vivid: 180, contrast: 70,  dither: 0, concept: 75, perceptual: false, abstract: true },
 };
 
 document.querySelectorAll(".style-btn").forEach((btn) => {
@@ -539,6 +544,7 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
     vividSlider.value = preset.vivid;
     contrastSlider.value = preset.contrast;
     ditherSlider.value = preset.dither;
+    if (conceptSlider) conceptSlider.value = preset.concept || 0;
     if (perceptualCheckbox) perceptualCheckbox.checked = !!preset.perceptual;
     if (abstractCheckbox) abstractCheckbox.checked = !!preset.abstract;
     syncSimplifyLabel();
@@ -758,6 +764,50 @@ function enhanceImageData(imageData, structure, vivid, contrast = 0) {
   return data === imageData.data ? imageData : { width: W, height: H, data };
 }
 
+// 「浓艳（白高光）」海报化调色。名画缩小后天空最容易发脏，根子是原作的云是暖
+// 米灰、天空是好几种灰蓝，混在一起像一团。这一步做三件事，把它推向"干净白云 +
+// 通透蓝天"的海报感：
+//   1) 亮部漂白 —— 越亮的像素（云）越往白里推：降彩度、提亮度，暖米灰的云变白；
+//   2) 整体加彩度 —— 蓝天更蓝、草更绿，从灰里拎出来；
+//   3) 略拉明暗对比。
+// 这是"重新调色"，不是忠实还原 —— 但正是实体作品让画一眼跳出来的做法。放在
+// 概括之前：先把颜色理干净，概括再把它们归成大色块。
+function conceptGrade(imageData, amount) {
+  if (amount <= 0.001) return imageData;
+  const { width: W, height: H, data: src } = imageData;
+  const out = new Uint8ClampedArray(src);
+  const sm = (x) => { const t = Math.min(1, Math.max(0, (x - 0.55) / 0.30)); return t * t * (3 - 2 * t); };
+  for (let p = 0; p < W * H; p++) {
+    const o = p * 4;
+    let r = src[o] / 255, g = src[o + 1] / 255, b = src[o + 2] / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), dl = mx - mn;
+    let h = 0, s = mx === 0 ? 0 : dl / mx, v = mx;
+    if (dl > 0) {
+      if (mx === r) h = ((g - b) / dl) % 6;
+      else if (mx === g) h = (b - r) / dl + 2;
+      else h = (r - g) / dl + 4;
+      h /= 6; if (h < 0) h += 1;
+    }
+    const wl = sm(v);                                  // 高光权重
+    s = s * (1 - 0.85 * wl * amount) * (1 + 0.6 * amount);
+    v = v + 0.18 * wl * amount;
+    v = (v - 0.5) * (1 + 0.12 * amount) + 0.5 + 0.04 * amount;
+    s = Math.min(1, Math.max(0, s)); v = Math.min(1, Math.max(0, v));
+    const i = Math.floor(h * 6), f = h * 6 - i, pp = v * (1 - s), q = v * (1 - f * s), tt = v * (1 - (1 - f) * s);
+    let rr, gg, bb;
+    switch (i % 6) {
+      case 0: rr = v; gg = tt; bb = pp; break;
+      case 1: rr = q; gg = v; bb = pp; break;
+      case 2: rr = pp; gg = v; bb = tt; break;
+      case 3: rr = pp; gg = q; bb = v; break;
+      case 4: rr = tt; gg = pp; bb = v; break;
+      default: rr = v; gg = pp; bb = q;
+    }
+    out[o] = rr * 255; out[o + 1] = gg * 255; out[o + 2] = bb * 255; out[o + 3] = 255;
+  }
+  return { width: W, height: H, data: out };
+}
+
 fillSlider.addEventListener("input", () => {
   fillValue.textContent = Math.round(fillSlider.value * 100) + "%";
   regenerate();
@@ -826,6 +876,10 @@ async function regenerate() {
     vividAmount(),
     contrastAmount()
   );
+  // 浓艳（白高光）海报化调色：先把颜色理干净（白云、通透蓝天、彩度拎起来），
+  // 概括再把它们归成大色块。放在配色/概括之前。
+  imageData = conceptGrade(imageData, conceptAmount());
+
   const { gridW: sourceGridW, gridH: sourceGridH } = computeGrid(imageData.width, imageData.height, boardW * factor, boardH * factor, fillRatio);
 
   // 大色块概括（保边分割）：把画面归并成干净的大色块，同时保住主体。放在配色
